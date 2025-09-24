@@ -35,3 +35,10 @@ This is a Go package for serial communication (`github.com/mdjarv/serial`) using
 - Implement proper error handling with descriptive messages
 - Write tests for all public APIs
 - Follow Go naming conventions (exported vs unexported)
+
+## Development Workflow
+
+- **Always read README.md first** - Check the current project status and implementation roadmap before starting any work
+- **Update README.md when making progress** - If you complete features, fix issues, or make changes that affect the project status, update the README.md to reflect current state
+- **Track progress in README.md** - Use the implementation status sections to show what's completed, in progress, or planned for future
+- **Never use emojis** - Keep all markdown clean and readable without visual noise from emojis
