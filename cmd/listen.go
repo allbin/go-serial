@@ -4,19 +4,20 @@ Copyright © 2025 Mathias Djärv <mathias.djarv@allbinary.se>
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mdjarv/serial"
+	"github.com/mdjarv/serial/internal/tui/components"
+	"github.com/mdjarv/serial/internal/tui/keys"
+	"github.com/mdjarv/serial/internal/tui/models"
+	"github.com/mdjarv/serial/internal/tui/styles"
 	"github.com/spf13/cobra"
 )
 
@@ -76,98 +77,41 @@ func init() {
 
 // listenModel represents the Bubble Tea model for the listen command
 type listenModel struct {
-	port     *serial.Port
-	portPath string
-	viewport viewport.Model
-	help     help.Model
-	keys     listenKeyMap
-
-	// State
-	connected bool
-	rawData   []dataReceivedMsg // Store raw data for reformatting
-	data      []string          // Formatted display data
-	status    string
-	err       error
-	ready     bool
-
-	// Display modes
-	showHex   bool
-	showASCII bool
-
-	// Cancellation and synchronization
-	cancel context.CancelFunc
-	ctx    context.Context
-	mu     sync.RWMutex
-}
-
-type listenKeyMap struct {
-	Quit      key.Binding
-	Help      key.Binding
-	Clear     key.Binding
-	ToggleHex key.Binding
-	ToggleASCII key.Binding
-}
-
-func (k listenKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Help, k.Clear, k.ToggleHex, k.ToggleASCII, k.Quit}
-}
-
-func (k listenKeyMap) FullHelp() [][]key.Binding {
-	return [][]key.Binding{
-		{k.Help, k.Clear, k.ToggleHex, k.ToggleASCII, k.Quit},
-	}
-}
-
-var defaultListenKeys = listenKeyMap{
-	Quit: key.NewBinding(
-		key.WithKeys("q", "Q", "ctrl+c"),
-		key.WithHelp("q/ctrl+c", "quit"),
-	),
-	Help: key.NewBinding(
-		key.WithKeys("?"),
-		key.WithHelp("?", "toggle help"),
-	),
-	Clear: key.NewBinding(
-		key.WithKeys("c"),
-		key.WithHelp("c", "clear buffer"),
-	),
-	ToggleHex: key.NewBinding(
-		key.WithKeys("h"),
-		key.WithHelp("h", "toggle hex"),
-	),
-	ToggleASCII: key.NewBinding(
-		key.WithKeys("a"),
-		key.WithHelp("a", "toggle ascii"),
-	),
-}
-
-type dataReceivedMsg struct {
-	timestamp time.Time
-	data      []byte
-}
-type connectionStatusMsg struct {
-	connected bool
-	err       error
+	*models.SerialModel
+	terminal  *components.Terminal
+	statusBar *components.StatusBar
+	help      help.Model
+	keys      keys.TerminalKeys
 }
 
 func runListenTUI(portPath string, opts ...serial.Option) error {
-	// Create context for cancellation
-	ctx, cancel := context.WithCancel(context.Background())
+
+	// Create configuration from options to show in status bar
+	config := serial.DefaultConfig()
+	for _, opt := range opts {
+		opt(&config)
+	}
+
+	// Create connection info for status bar
+	connInfo := &components.ConnectionInfo{
+		BaudRate:    config.BaudRate,
+		FlowControl: config.FlowControl,
+		DataBits:    config.DataBits,
+		StopBits:    config.StopBits,
+		Parity:      config.Parity,
+	}
 
 	// Create initial model
+	serialModel := models.NewSerialModel(portPath)
 	m := listenModel{
-		portPath:  portPath,
-		viewport:  viewport.New(80, 20),
-		help:      help.New(),
-		keys:      defaultListenKeys,
-		rawData:   make([]dataReceivedMsg, 0),
-		data:      make([]string, 0),
-		status:    "Connecting...",
-		showHex:   true,  // Show hex by default
-		showASCII: true,  // Show ASCII by default
-		ctx:       ctx,
-		cancel:    cancel,
+		SerialModel: serialModel,
+		terminal:    components.NewTerminal(80, 20),
+		statusBar:   components.NewStatusBar("Serial Listen", portPath),
+		help:        help.New(),
+		keys:        keys.NewTerminalKeys(),
 	}
+	m.statusBar.SetConnecting()
+	m.statusBar.SetConnectionInfo(connInfo)
 
 	// Start the TUI with alt screen and input handling
 	p := tea.NewProgram(&m, tea.WithAltScreen(), tea.WithMouseCellMotion())
@@ -176,43 +120,50 @@ func runListenTUI(portPath string, opts ...serial.Option) error {
 	go func() {
 		port, err := serial.Open(portPath, opts...)
 		if err != nil {
-			p.Send(connectionStatusMsg{connected: false, err: err})
+			p.Send(models.ConnectionStatusMsg{Connected: false, Error: err})
 			return
 		}
 
 		// Store port safely
-		m.mu.Lock()
-		m.port = port
-		m.mu.Unlock()
+		m.SetPort(port)
 
-		p.Send(connectionStatusMsg{connected: true, err: nil})
+		p.Send(models.ConnectionStatusMsg{Connected: true, Error: nil})
 
 		// Start reading data with context cancellation
 		go func() {
 			defer func() {
-				m.mu.Lock()
-				if m.port != nil {
-					m.port.Close()
-					m.port = nil
+				// Only close the port when this goroutine exits, don't cleanup the whole model
+				if port != nil {
+					port.Close()
 				}
-				m.mu.Unlock()
 			}()
 
 			buffer := make([]byte, 1024)
 			for {
-				n, err := port.ReadContext(ctx, buffer)
-				if err != nil {
-					// Context was cancelled or other error occurred
+				select {
+				case <-m.GetContext().Done():
+					// Context was cancelled, exit cleanly
 					return
-				}
-				if n > 0 {
-					// Send raw data with timestamp - formatting will happen in Update method
-					data := make([]byte, n)
-					copy(data, buffer[:n])
-					p.Send(dataReceivedMsg{
-						timestamp: time.Now(),
-						data:      data,
-					})
+				default:
+					// Try to read data from the serial port
+					n, err := port.ReadContext(m.GetContext(), buffer)
+					if err != nil {
+						// Check if it's a context cancellation
+						if m.GetContext().Err() != nil {
+							return // Context cancelled, exit cleanly
+						}
+						// For other errors, continue trying to read
+						continue
+					}
+					if n > 0 {
+						// Send raw data with timestamp - formatting will happen in Update method
+						data := make([]byte, n)
+						copy(data, buffer[:n])
+						p.Send(components.DataReceivedMsg{
+							Timestamp: time.Now(),
+							Data:      data,
+						})
+					}
 				}
 			}
 		}()
@@ -221,7 +172,7 @@ func runListenTUI(portPath string, opts ...serial.Option) error {
 	_, err := p.Run()
 
 	// Ensure cleanup
-	cancel()
+	m.Cancel()
 	return err
 }
 
@@ -229,130 +180,79 @@ func (m *listenModel) Init() tea.Cmd {
 	return nil
 }
 
-// formatDataMessage formats received data according to display mode settings
-func (m *listenModel) formatDataMessage(msg dataReceivedMsg) string {
-	timestamp := msg.timestamp.Format("15:04:05.000")
-
-	var parts []string
-
-	if m.showHex {
-		hexStr := fmt.Sprintf("% X", msg.data)
-		parts = append(parts, fmt.Sprintf("HEX: %s", hexStr))
-	}
-
-	if m.showASCII {
-		asciiStr := ""
-		for _, b := range msg.data {
-			if b >= 32 && b <= 126 {
-				asciiStr += string(b)
-			} else {
-				asciiStr += "."
-			}
-		}
-		parts = append(parts, fmt.Sprintf("ASCII: %s", asciiStr))
-	}
-
-	// If both are disabled, show raw bytes count
-	if !m.showHex && !m.showASCII {
-		parts = append(parts, fmt.Sprintf("BYTES: %d", len(msg.data)))
-	}
-
-	return fmt.Sprintf("[%s] %s", timestamp, strings.Join(parts, "  "))
-}
-
-// refreshDisplayData reformats all stored data according to current display settings
-func (m *listenModel) refreshDisplayData() {
-	m.data = make([]string, 0, len(m.rawData))
-	for _, rawMsg := range m.rawData {
-		m.data = append(m.data, m.formatDataMessage(rawMsg))
-	}
-	m.viewport.SetContent(strings.Join(m.data, "\n"))
-	m.viewport.GotoBottom()
-}
-
 func (m *listenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		headerHeight := 3
-		// Dynamic footer height based on help state
-		footerHeight := 2
-		if m.help.ShowAll {
-			footerHeight = 4
-		}
-		verticalMarginHeight := headerHeight + footerHeight
+		// Status bar is single line
+		statusBarHeight := 1
+		verticalMarginHeight := statusBarHeight
 
-		if !m.ready {
-			m.viewport = viewport.New(msg.Width, msg.Height-verticalMarginHeight)
-			m.ready = true
+		if !m.IsReady() {
+			m.terminal.SetSize(msg.Width, msg.Height-verticalMarginHeight)
+			m.SetReady(true)
 		} else {
-			m.viewport.Width = msg.Width
-			m.viewport.Height = msg.Height - verticalMarginHeight
+			m.terminal.SetSize(msg.Width, msg.Height-verticalMarginHeight)
 		}
+		m.statusBar.SetWidth(msg.Width)
 
-	case connectionStatusMsg:
-		m.connected = msg.connected
-		if msg.err != nil {
-			m.err = msg.err
-			m.status = fmt.Sprintf("Connection failed: %v", msg.err)
+	case models.ConnectionStatusMsg:
+		m.SetConnected(msg.Connected)
+		if msg.Error != nil {
+			m.SetError(msg.Error)
+			m.statusBar.SetDisconnected(msg.Error)
 		} else {
-			m.status = "Connected - listening for data..."
+			m.statusBar.SetConnected()
 		}
 
-	case dataReceivedMsg:
-		m.rawData = append(m.rawData, msg)
-		formattedMsg := m.formatDataMessage(msg)
-		m.data = append(m.data, formattedMsg)
-		m.viewport.SetContent(strings.Join(m.data, "\n"))
-		m.viewport.GotoBottom()
+	case components.DataReceivedMsg:
+		// Safely handle the data message
+		defer func() {
+			if r := recover(); r != nil {
+				// If there's a panic in data handling, don't crash the whole UI
+				// Just continue running
+			}
+		}()
+
+		// Ensure we're ready to display data - if window size hasn't been set yet,
+		// use reasonable defaults
+		if !m.IsReady() {
+			m.terminal.SetSize(80, 20) // Default terminal size
+			m.SetReady(true)
+		}
+
+		m.AddRawData(msg)
+		m.terminal.AddMessage(msg)
 
 	case tea.KeyMsg:
 		switch {
 		case key.Matches(msg, m.keys.Quit):
-			// Cancel context to stop goroutines
-			if m.cancel != nil {
-				m.cancel()
-			}
-
-			// Close port safely
-			m.mu.Lock()
-			if m.port != nil {
-				m.port.Close()
-				m.port = nil
-			}
-			m.mu.Unlock()
-
+			m.Cleanup()
 			return m, tea.Quit
 
 		case key.Matches(msg, m.keys.Clear):
-			m.rawData = make([]dataReceivedMsg, 0)
-			m.data = make([]string, 0)
-			m.viewport.SetContent("")
+			m.ClearData()
+			m.terminal.Clear()
 
 		case key.Matches(msg, m.keys.Help):
 			m.help.ShowAll = !m.help.ShowAll
 
 		case key.Matches(msg, m.keys.ToggleHex):
-			m.showHex = !m.showHex
-			m.refreshDisplayData()
+			m.terminal.ToggleHex()
+			m.terminal.RefreshDisplayWithRawData(m.GetRawData())
 
 		case key.Matches(msg, m.keys.ToggleASCII):
-			m.showASCII = !m.showASCII
-			m.refreshDisplayData()
+			m.terminal.ToggleASCII()
+			m.terminal.RefreshDisplayWithRawData(m.GetRawData())
 		}
 	}
 
-	// Update viewport only for messages it understands
+	// Update terminal viewport for window resize messages
 	var cmd tea.Cmd
 	switch msg.(type) {
-	case tea.KeyMsg:
-		// Don't pass key messages to viewport to prevent it from consuming them
-	case dataReceivedMsg, connectionStatusMsg:
-		// Don't pass our custom message types to viewport
 	case tea.WindowSizeMsg:
-		// Pass window resize messages to viewport
-		m.viewport, cmd = m.viewport.Update(msg)
+		_, cmd = m.terminal.Update(msg)
 		cmds = append(cmds, cmd)
 	}
 
@@ -360,45 +260,38 @@ func (m *listenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *listenModel) View() string {
-	if !m.ready {
-		return "\n  Initializing..."
+	// Always show the UI, even if not fully ready
+	// If not ready, we'll show what we can with defaults
+
+	// Main content (no header now)
+	var content string
+	if m.IsReady() {
+		content = m.terminal.View()
+	} else {
+		// Show initializing message in a consistent format
+		content = "Initializing..."
 	}
 
-	// Styles
-	titleStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("99")).
-		Background(lipgloss.Color("235")).
-		Padding(0, 1)
+	// Comprehensive status bar (listen mode is always NORMAL, no sending mode)
+	inputMode := "NORMAL"
+	sendingMode := "LISTEN" // Special mode for listen-only
+	timestamp := time.Now().Format("15:04:05")
 
-	statusStyle := lipgloss.NewStyle().
-		Foreground(func() lipgloss.Color {
-			if m.connected {
-				return lipgloss.Color("40") // Green
-			} else {
-				return lipgloss.Color("196") // Red
-			}
-		}()).
-		Bold(true)
+	// Set the status bar width to match terminal
+	terminalWidth := 80
+	if m.IsReady() {
+		terminalWidth = m.terminal.GetViewport().Width
+	}
+	m.statusBar.SetWidth(terminalWidth)
 
-	// Header
-	title := titleStyle.Render(fmt.Sprintf("Serial Listen - %s", m.portPath))
-	status := statusStyle.Render(m.status)
-	header := lipgloss.JoinHorizontal(lipgloss.Left, title, " ", status)
+	statusBar := m.statusBar.ComprehensiveStatusBar(inputMode, sendingMode, m.IsConnected(), timestamp)
 
-	// Main content
-	content := m.viewport.View()
-
-	// Footer with help
-	helpView := m.help.View(m.keys)
-
-	// Layout with proper spacing
-	contentWithBorder := lipgloss.NewStyle().BorderTop(true).BorderStyle(lipgloss.NormalBorder()).Render(content)
+	// Layout without header, with comprehensive status bar at bottom
+	contentWithBorder := styles.ContentBorderStyle.Render(content)
 
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
-		header,
 		contentWithBorder,
-		helpView,
+		statusBar,
 	)
 }

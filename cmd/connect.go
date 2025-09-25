@@ -6,42 +6,45 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/list"
-	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mdjarv/serial"
+	"github.com/mdjarv/serial/internal/tui/components"
+	"github.com/mdjarv/serial/internal/tui/keys"
+	"github.com/mdjarv/serial/internal/tui/models"
+	"github.com/mdjarv/serial/internal/tui/styles"
 	"github.com/spf13/cobra"
 )
 
 // connectCmd represents the connect command
 var connectCmd = &cobra.Command{
-	Use:   "connect [port]",
-	Short: "Interactive serial terminal with port selection",
-	Long: `Open an interactive serial terminal with beautiful port selection interface.
+	Use:   "connect <port>",
+	Short: "Connect to a serial port with bidirectional communication",
+	Long: `Connect to a serial port with a beautiful bidirectional terminal interface.
 
-This command provides a full-featured serial terminal experience with:
-- Interactive port selection (if no port specified)
-- Real-time bidirectional communication
-- Split-pane interface (receive/send)
+This command opens the specified serial port and provides an interactive terminal
+with real-time bidirectional communication. Features include:
+- Real-time data streaming with timestamps
+- Input field for sending data
+- ASCII and hex display modes
 - Connection status indicators
 - Configurable baud rate and flow control
-- Clean, responsive terminal UI
-
-If no port is specified, an interactive port selector will be shown.
-Otherwise, connects directly to the specified port.
+- Clean, responsive interface
 
 Example usage:
-  serial connect                    # Interactive port selection
-  serial connect /dev/ttyUSB0       # Connect directly to port
-  serial connect /dev/ttyUSB0 --baud 9600 --flow-control cts`,
+  serial connect /dev/ttyUSB0
+  serial connect /dev/ttyUSB0 --baud 9600
+  serial connect /dev/ttyUSB0 --flow-control cts`,
+	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
+		portPath := args[0]
+
 		// Get flags
 		baudRate, _ := cmd.Flags().GetInt("baud")
 		flowControl, _ := cmd.Flags().GetString("flow-control")
@@ -58,12 +61,7 @@ Example usage:
 			opts = append(opts, serial.WithFlowControl(serial.FlowControlRTSCTS))
 		}
 
-		var portPath string
-		if len(args) > 0 {
-			portPath = args[0]
-		}
-
-		// Start the interactive TUI
+		// Start the TUI
 		if err := runConnectTUI(portPath, opts...); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
@@ -79,244 +77,146 @@ func init() {
 	connectCmd.Flags().StringP("flow-control", "f", "none", "Flow control: none, cts, rtscts (default: none)")
 }
 
-// connectState represents the different states of the connect interface
-type connectState int
-
-const (
-	statePortSelection connectState = iota
-	stateConnecting
-	stateTerminal
-	stateError
-)
-
 // connectModel represents the Bubble Tea model for the connect command
 type connectModel struct {
-	state     connectState
-	portList  list.Model
-	textInput textinput.Model
-	viewport  viewport.Model
+	*models.SerialModel
+	terminal  *components.Terminal
+	statusBar *components.StatusBar
+	input     *components.Input
 	help      help.Model
-	keys      connectKeyMap
-
-	// Serial communication
-	port        *serial.Port
-	portPath    string
-	portOptions []serial.Option
-
-	// State
-	ready     bool
-	connected bool
-	data      []string
-	status    string
-	err       error
-
-	// Terminal dimensions
-	width  int
-	height int
+	keys      keys.ConnectKeys
 }
 
-type connectKeyMap struct {
-	Quit  key.Binding
-	Help  key.Binding
-	Enter key.Binding
-	Up    key.Binding
-	Down  key.Binding
-	Send  key.Binding
-}
+func runConnectTUI(portPath string, opts ...serial.Option) error {
 
-func (k connectKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Help, k.Send, k.Quit}
-}
-
-func (k connectKeyMap) FullHelp() [][]key.Binding {
-	return [][]key.Binding{
-		{k.Up, k.Down, k.Enter},
-		{k.Help, k.Send, k.Quit},
+	// Create configuration from options to show in status bar
+	config := serial.DefaultConfig()
+	for _, opt := range opts {
+		opt(&config)
 	}
-}
 
-var defaultConnectKeys = connectKeyMap{
-	Quit: key.NewBinding(
-		key.WithKeys("ctrl+c"),
-		key.WithHelp("ctrl+c", "quit"),
-	),
-	Help: key.NewBinding(
-		key.WithKeys("?"),
-		key.WithHelp("?", "toggle help"),
-	),
-	Enter: key.NewBinding(
-		key.WithKeys("enter"),
-		key.WithHelp("enter", "select/send"),
-	),
-	Up: key.NewBinding(
-		key.WithKeys("up", "k"),
-		key.WithHelp("↑/k", "up"),
-	),
-	Down: key.NewBinding(
-		key.WithKeys("down", "j"),
-		key.WithHelp("↓/j", "down"),
-	),
-	Send: key.NewBinding(
-		key.WithKeys("ctrl+s"),
-		key.WithHelp("ctrl+s", "send message"),
-	),
-}
+	// Create connection info for status bar
+	connInfo := &components.ConnectionInfo{
+		BaudRate:    config.BaudRate,
+		FlowControl: config.FlowControl,
+		DataBits:    config.DataBits,
+		StopBits:    config.StopBits,
+		Parity:      config.Parity,
+	}
 
-// portItem represents a port in the selection list
-type portItem struct {
-	path        string
-	description string
-	portType    string
-}
+	// Create initial model with minimal dimensions - let WindowSizeMsg set proper size
+	serialModel := models.NewSerialModel(portPath)
+	m := connectModel{
+		SerialModel: serialModel,
+		terminal:    components.NewTerminal(0, 0), // Will be properly sized by WindowSizeMsg
+		statusBar:   components.NewStatusBar("Serial Connect", portPath),
+		input:       components.NewInput("Type message and press Enter to send..."),
+		help:        help.New(),
+		keys:        keys.NewConnectKeys(),
+	}
+	m.statusBar.SetConnecting()
+	m.statusBar.SetConnectionInfo(connInfo)
 
-func (i portItem) FilterValue() string { return i.path }
-func (i portItem) Title() string       { return i.path }
-func (i portItem) Description() string { return fmt.Sprintf("%s - %s", i.portType, i.description) }
+	// Start the TUI with alt screen and input handling
+	p := tea.NewProgram(&m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 
-type connectPortSelectedMsg string
-type connectDataReceivedMsg string
-type connectConnectionStatusMsg struct {
-	connected bool
-	err       error
-}
-type connectTerminalDataMsg string
+	// Connect to serial port in background
+	go func() {
+		port, err := serial.Open(portPath, opts...)
+		if err != nil {
+			p.Send(models.ConnectionStatusMsg{Connected: false, Error: err})
+			return
+		}
 
-func runConnectTUI(initialPort string, opts ...serial.Option) error {
-	// Create the model
-	m := newConnectModel(initialPort, opts...)
+		// Store port safely
+		m.SetPort(port)
 
-	// Start the TUI
-	p := tea.NewProgram(&m, tea.WithAltScreen())
+		p.Send(models.ConnectionStatusMsg{Connected: true, Error: nil})
+
+		// Start reading data with context cancellation
+		go func() {
+			defer func() {
+				// Only close the port when this goroutine exits
+				if port != nil {
+					port.Close()
+				}
+			}()
+
+			buffer := make([]byte, 1024)
+			for {
+				select {
+				case <-m.GetContext().Done():
+					// Context was cancelled, exit cleanly
+					return
+				default:
+					// Try to read data from the serial port
+					n, err := port.ReadContext(m.GetContext(), buffer)
+					if err != nil {
+						// Check if it's a context cancellation
+						if m.GetContext().Err() != nil {
+							return // Context cancelled, exit cleanly
+						}
+						// For other errors, continue trying to read
+						continue
+					}
+					if n > 0 {
+						// Send raw data with timestamp - formatting will happen in Update method
+						data := make([]byte, n)
+						copy(data, buffer[:n])
+						p.Send(components.DataReceivedMsg{
+							Timestamp: time.Now(),
+							Data:      data,
+						})
+					}
+				}
+			}
+		}()
+	}()
 
 	_, err := p.Run()
+
+	// Ensure cleanup
+	m.Cancel()
 	return err
 }
 
-func newConnectModel(initialPort string, opts ...serial.Option) connectModel {
-	// Create text input for terminal
-	ti := textinput.New()
-	ti.Placeholder = "Type message and press Enter to send..."
-	ti.CharLimit = 256
-
-	// Create viewport for received data
-	vp := viewport.New(80, 10)
-
-	// Create help
-	h := help.New()
-	h.ShowAll = false
-
-	m := connectModel{
-		textInput:   ti,
-		viewport:    vp,
-		help:        h,
-		keys:        defaultConnectKeys,
-		portOptions: opts,
-		data:        make([]string, 0),
-		status:      "Initializing...",
-	}
-
-	if initialPort != "" {
-		// Connect directly to specified port
-		m.portPath = initialPort
-		m.state = stateConnecting
-	} else {
-		// Show port selection
-		m.state = statePortSelection
-		m.setupPortList()
-	}
-
-	return m
-}
-
-func (m *connectModel) setupPortList() {
-	// Get available ports
-	ports, err := serial.ListPorts()
-	if err != nil {
-		m.state = stateError
-		m.err = err
-		return
-	}
-
-	if len(ports) == 0 {
-		m.state = stateError
-		m.err = fmt.Errorf("no serial ports found")
-		return
-	}
-
-	// Create port items
-	items := make([]list.Item, len(ports))
-	for i, port := range ports {
-		info, err := serial.GetPortInfo(port)
-		if err != nil {
-			items[i] = portItem{
-				path:        port,
-				description: "Unknown",
-				portType:    "Serial Port",
-			}
-			continue
-		}
-
-		items[i] = portItem{
-			path:        info.Name,
-			description: info.Description,
-			portType:    getPortType(info.Name),
-		}
-	}
-
-	// Setup list
-	l := list.New(items, list.NewDefaultDelegate(), 80, 20)
-	l.Title = "Select a Serial Port"
-	l.SetFilteringEnabled(true)
-
-	m.portList = l
-}
-
 func (m *connectModel) Init() tea.Cmd {
-	switch m.state {
-	case stateConnecting:
-		return m.connectToPort()
-	case statePortSelection:
-		return nil
-	default:
-		return nil
-	}
+	return nil
 }
 
-func (m *connectModel) connectToPort() tea.Cmd {
-	return func() tea.Msg {
-		port, err := serial.Open(m.portPath, m.portOptions...)
+// parseHexInput converts hex strings to bytes. Supports both:
+// - Space-separated: "48 65 6C 6C 6F"
+// - Continuous: "48656C6C6F"
+func parseHexInput(hexStr string) ([]byte, error) {
+	// Remove any spaces and convert to uppercase for consistency
+	cleanHex := strings.ReplaceAll(strings.TrimSpace(hexStr), " ", "")
+	if len(cleanHex) == 0 {
+		return nil, fmt.Errorf("empty input")
+	}
+
+	// Check if it's valid hex characters
+	for _, char := range cleanHex {
+		if !((char >= '0' && char <= '9') || (char >= 'A' && char <= 'F') || (char >= 'a' && char <= 'f')) {
+			return nil, fmt.Errorf("invalid hex character '%c'", char)
+		}
+	}
+
+	// Must be even number of hex digits to form complete bytes
+	if len(cleanHex)%2 != 0 {
+		return nil, fmt.Errorf("hex string must have even number of digits (got %d)", len(cleanHex))
+	}
+
+	// Parse pairs of hex digits into bytes
+	bytes := make([]byte, 0, len(cleanHex)/2)
+	for i := 0; i < len(cleanHex); i += 2 {
+		hexByte := cleanHex[i : i+2]
+		b, err := strconv.ParseUint(hexByte, 16, 8)
 		if err != nil {
-			return connectConnectionStatusMsg{connected: false, err: err}
+			return nil, fmt.Errorf("invalid hex byte '%s': %v", hexByte, err)
 		}
-
-		// Store the port connection
-		m.port = port
-
-		return connectConnectionStatusMsg{connected: true, err: nil}
+		bytes = append(bytes, byte(b))
 	}
-}
-
-func (m *connectModel) startSerialReader() tea.Cmd {
-	return tea.Tick(time.Millisecond*100, func(t time.Time) tea.Msg {
-		if m.port == nil {
-			return nil
-		}
-
-		// Try to read data from the serial port (non-blocking)
-		buffer := make([]byte, 256)
-		n, err := m.port.Read(buffer)
-		if err != nil || n == 0 {
-			return nil
-		}
-
-		// Convert to string and send as message
-		data := strings.TrimRight(string(buffer[:n]), "\r\n")
-		if data != "" {
-			return connectDataReceivedMsg(data)
-		}
-
-		return nil
-	})
+	return bytes, nil
 }
 
 func (m *connectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -324,111 +224,161 @@ func (m *connectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
+		// Input area height (includes border)
+		inputHeight := 3
+		// Status bar is single line
+		statusBarHeight := 1
+		verticalMarginHeight := inputHeight + statusBarHeight
 
-		switch m.state {
-		case statePortSelection:
-			m.portList.SetWidth(msg.Width)
-			m.portList.SetHeight(msg.Height - 4)
-		case stateTerminal:
-			if !m.ready {
-				// Terminal mode: split screen (70% viewport, 30% input area)
-				viewportHeight := int(float64(msg.Height)*0.7) - 4
-				m.viewport = viewport.New(msg.Width, viewportHeight)
-				m.textInput.Width = msg.Width - 4
-				m.ready = true
-			} else {
-				viewportHeight := int(float64(m.height)*0.7) - 4
-				m.viewport.Width = msg.Width
-				m.viewport.Height = viewportHeight
-				m.textInput.Width = msg.Width - 4
-			}
-		}
-
-	case connectConnectionStatusMsg:
-		if msg.err != nil {
-			m.state = stateError
-			m.err = msg.err
+		if !m.IsReady() {
+			m.terminal.SetSize(msg.Width, msg.Height-verticalMarginHeight)
+			m.input.SetWidth(msg.Width)
+			m.SetReady(true)
 		} else {
-			m.state = stateTerminal
-			m.connected = true
-			m.status = fmt.Sprintf("Connected to %s", m.portPath)
-			m.textInput.Focus()
+			m.terminal.SetSize(msg.Width, msg.Height-verticalMarginHeight)
+			m.input.SetWidth(msg.Width)
+		}
+		m.statusBar.SetWidth(msg.Width)
 
-			// Start background reader
-			return m, m.startSerialReader()
+	case models.ConnectionStatusMsg:
+		m.SetConnected(msg.Connected)
+		if msg.Error != nil {
+			m.SetError(msg.Error)
+			m.statusBar.SetDisconnected(msg.Error)
+		} else {
+			m.statusBar.SetConnected()
+			m.input.Focus()
 		}
 
-	case connectDataReceivedMsg:
-		timestamp := time.Now().Format("15:04:05")
-		m.data = append(m.data, fmt.Sprintf("[%s] RX: %s", timestamp, string(msg)))
-		m.viewport.SetContent(strings.Join(m.data, "\n"))
-		m.viewport.GotoBottom()
+	case components.DataReceivedMsg:
+		// Safely handle the data message
+		defer func() {
+			if r := recover(); r != nil {
+				// If there's a panic in data handling, don't crash the whole UI
+				// Just continue running
+			}
+		}()
+
+		// Only process data if we're ready (WindowSizeMsg has been received)
+		if m.IsReady() {
+			m.AddRawData(msg)
+			m.terminal.AddMessage(msg)
+		}
 
 	case tea.KeyMsg:
-		switch m.state {
-		case statePortSelection:
+		// Handle mode-specific keys
+		if m.IsInInsertMode() {
+			// Insert mode - handle input and escape
 			switch {
-			case key.Matches(msg, m.keys.Quit):
-				return m, tea.Quit
-			case key.Matches(msg, m.keys.Enter):
-				if selectedItem := m.portList.SelectedItem(); selectedItem != nil {
-					if port, ok := selectedItem.(portItem); ok {
-						m.portPath = port.path
-						m.state = stateConnecting
-						m.status = fmt.Sprintf("Connecting to %s...", port.path)
-						return m, m.connectToPort()
-					}
-				}
-			}
-
-		case stateTerminal:
-			switch {
-			case key.Matches(msg, m.keys.Quit):
-				if m.port != nil {
-					m.port.Close()
-				}
-				return m, tea.Quit
+			case key.Matches(msg, m.keys.Escape):
+				m.SetInputMode(models.InputModeNormal)
+				m.input.Blur()
+				return m, tea.Batch(cmds...)
 			case key.Matches(msg, m.keys.Enter):
 				// Send the message
-				if m.textInput.Value() != "" && m.port != nil {
-					message := m.textInput.Value()
+				port := m.GetPort()
+				if m.input.Value() != "" && port != nil {
+					inputStr := m.input.Value()
+					var dataToSend []byte
+					var displayData []byte
+					var err error
+
+					switch m.input.GetSendingMode() {
+					case components.SendingModeASCII:
+						dataToSend = []byte(inputStr + "\n")
+						displayData = []byte(inputStr)
+					case components.SendingModeHex:
+						dataToSend, err = parseHexInput(inputStr)
+						if err != nil {
+							// Show error in terminal but don't send anything
+							errorMsg := fmt.Sprintf("Invalid hex input: %v", err)
+							timestamp := time.Now()
+							errorData := components.DataReceivedMsg{
+								Timestamp: timestamp,
+								Data:      []byte(errorMsg),
+								IsTX:      false,
+							}
+							m.terminal.AddMessage(errorData)
+							return m, tea.Batch(cmds...)
+						}
+						displayData = dataToSend
+					}
+
+					// Send the data
 					go func() {
-						m.port.Write([]byte(message + "\n"))
+						port.Write(dataToSend)
 					}()
 
-					// Add to display
-					timestamp := time.Now().Format("15:04:05")
-					m.data = append(m.data, fmt.Sprintf("[%s] TX: %s", timestamp, message))
-					m.viewport.SetContent(strings.Join(m.data, "\n"))
-					m.viewport.GotoBottom()
+					// Add to display with TX prefix
+					timestamp := time.Now()
+					txData := components.DataReceivedMsg{
+						Timestamp: timestamp,
+						Data:      displayData,
+						IsTX:      true,
+					}
+					// Add to both raw data store and terminal display
+					m.AddRawData(txData)
+					m.terminal.AddMessage(txData)
 
-					m.textInput.SetValue("")
+					// Add to history before clearing
+					m.input.AddToHistory(inputStr)
+					m.input.SetValue("")
 				}
+				return m, tea.Batch(cmds...)
+			case key.Matches(msg, m.keys.Up):
+				m.input.NavigateHistoryUp()
+				return m, tea.Batch(cmds...)
+			case key.Matches(msg, m.keys.Down):
+				m.input.NavigateHistoryDown()
+				return m, tea.Batch(cmds...)
+			case key.Matches(msg, m.keys.ToggleSendMode):
+				m.input.ToggleSendingMode()
+				return m, tea.Batch(cmds...)
+			}
+		} else {
+			// Normal mode - handle navigation and mode switching
+			switch {
+			case key.Matches(msg, m.keys.Quit):
+				m.Cleanup()
+				return m, tea.Quit
+
+			case key.Matches(msg, m.keys.InsertMode):
+				m.SetInputMode(models.InputModeInsert)
+				m.input.Focus()
+				return m, tea.Batch(cmds...)
+
+			case key.Matches(msg, m.keys.Clear):
+				m.ClearData()
+				m.terminal.Clear()
+
 			case key.Matches(msg, m.keys.Help):
 				m.help.ShowAll = !m.help.ShowAll
-			}
 
-		case stateError:
-			if key.Matches(msg, m.keys.Quit) {
-				return m, tea.Quit
+			case key.Matches(msg, m.keys.ToggleHex):
+				m.terminal.ToggleHex()
+				m.terminal.RefreshDisplayWithRawData(m.GetRawData())
+
+			case key.Matches(msg, m.keys.ToggleASCII):
+				m.terminal.ToggleASCII()
+				m.terminal.RefreshDisplayWithRawData(m.GetRawData())
+
+			case key.Matches(msg, m.keys.ToggleSendMode):
+				m.input.ToggleSendingMode()
 			}
 		}
 	}
 
-	// Update components based on state
+	// Update components (only update input in insert mode)
 	var cmd tea.Cmd
-	switch m.state {
-	case statePortSelection:
-		m.portList, cmd = m.portList.Update(msg)
+	if m.IsInInsertMode() {
+		m.input, cmd = m.input.Update(msg)
 		cmds = append(cmds, cmd)
+	}
 
-	case stateTerminal:
-		m.textInput, cmd = m.textInput.Update(msg)
-		cmds = append(cmds, cmd)
-
-		m.viewport, cmd = m.viewport.Update(msg)
+	// Update terminal viewport for window resize messages
+	switch msg.(type) {
+	case tea.WindowSizeMsg:
+		_, cmd = m.terminal.Update(msg)
 		cmds = append(cmds, cmd)
 	}
 
@@ -436,83 +386,43 @@ func (m *connectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *connectModel) View() string {
-	switch m.state {
-	case statePortSelection:
-		return m.renderPortSelection()
-	case stateConnecting:
-		return m.renderConnecting()
-	case stateTerminal:
-		return m.renderTerminal()
-	case stateError:
-		return m.renderError()
-	default:
-		return "Unknown state"
+	// Always show the UI, even if not fully ready
+	// If not ready, we'll show what we can with defaults
+
+	// Main content (no header now)
+	var content string
+	if m.IsReady() {
+		content = m.terminal.View()
+	} else {
+		// Show initializing message in a consistent format
+		content = "Initializing..."
 	}
-}
-
-func (m *connectModel) renderPortSelection() string {
-	return lipgloss.JoinVertical(
-		lipgloss.Left,
-		m.portList.View(),
-		m.help.View(m.keys),
-	)
-}
-
-func (m *connectModel) renderConnecting() string {
-	style := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("99")).
-		Align(lipgloss.Center).
-		Width(m.width)
-
-	return style.Render(fmt.Sprintf("🔌 %s", m.status))
-}
-
-func (m *connectModel) renderTerminal() string {
-	if !m.ready {
-		return "\n  Initializing terminal..."
-	}
-
-	// Styles
-	headerStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("99")).
-		Background(lipgloss.Color("235")).
-		Padding(0, 1).
-		Width(m.width)
-
-	inputStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("240")).
-		Padding(0, 1)
-
-	// Header
-	header := headerStyle.Render(fmt.Sprintf("📡 Serial Terminal - %s", m.portPath))
-
-	// Main content (received data)
-	content := m.viewport.View()
 
 	// Input area
-	input := inputStyle.Render(m.textInput.View())
+	inputMode := m.GetInputMode().String()
+	isInsertMode := m.IsInInsertMode()
+	input := m.input.ViewWithMode(inputMode, isInsertMode)
 
-	// Help
-	helpView := m.help.View(m.keys)
+	// Comprehensive status bar with all info
+	sendingMode := m.input.GetSendingMode().String()
+	timestamp := time.Now().Format("15:04:05")
+
+	// Set the status bar width to match terminal
+	terminalWidth := 80
+	if m.IsReady() {
+		terminalWidth = m.terminal.GetViewport().Width
+	}
+	m.statusBar.SetWidth(terminalWidth)
+
+	statusBar := m.statusBar.ComprehensiveStatusBar(inputMode, sendingMode, m.IsConnected(), timestamp)
+
+	// Layout without header, with comprehensive status bar at bottom
+	contentWithBorder := styles.ContentBorderStyle.Render(content)
 
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
-		header,
-		lipgloss.NewStyle().BorderTop(true).BorderStyle(lipgloss.NormalBorder()).Render(content),
+		contentWithBorder,
 		input,
-		helpView,
+		statusBar,
 	)
-}
-
-func (m *connectModel) renderError() string {
-	errorStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("196")).
-		Align(lipgloss.Center).
-		Width(m.width)
-
-	return errorStyle.Render(fmt.Sprintf("❌ Error: %v\n\nPress any key to exit", m.err))
 }
