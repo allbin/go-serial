@@ -1,7 +1,3 @@
-/*
-Copyright © 2025 Mathias Djärv <mathias.djarv@allbinary.se>
-
-*/
 package cmd
 
 import (
