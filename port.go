@@ -2,6 +2,7 @@ package serial
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"sync"
 	"syscall"
@@ -304,30 +305,24 @@ func (p *Port) Write(data []byte) (int, error) {
 		return 0, ErrPortClosed
 	}
 
-	// Handle flow control if needed
-	if p.config.FlowControl != FlowControlNone {
-		return p.writeWithFlowControl(data)
-	}
+	// For CTS/RTS flow control, trust the kernel's CRTSCTS handling
+	// (same logic as WriteContext)
+	fmt.Fprintf(os.Stderr, "[WRITE_PATH] Write() called with flow control: %v\n", p.config.FlowControl)
 
-	return p.file.Write(data)
+	writeStart := time.Now()
+	n, err := p.file.Write(data)
+	writeDuration := time.Since(writeStart)
+	fmt.Fprintf(os.Stderr, "[KERNEL_WRITE] Write() took %v: %d bytes written, err=%v\n", writeDuration, n, err)
+	return n, err
 }
 
 // writeWithFlowControl handles writing with CTS flow control
 func (p *Port) writeWithFlowControl(data []byte) (int, error) {
-	fd := int(p.file.Fd())
+	// Use the sophisticated flow control logic with a reasonable timeout
+	ctx, cancel := context.WithTimeout(context.Background(), p.config.CTSTimeout)
+	defer cancel()
 
-	// Check CTS before writing
-	status, err := getModemStatus(fd)
-	if err != nil {
-		return 0, err
-	}
-
-	if status&unix.TIOCM_CTS == 0 {
-		// CTS is not asserted - wait or timeout
-		return 0, ErrCTSTimeout
-	}
-
-	return p.file.Write(data)
+	return p.writeWithFlowControlContext(ctx, data)
 }
 
 // ReadContext reads data from the serial port with context timeout support
@@ -384,10 +379,11 @@ func (p *Port) WriteContext(ctx context.Context, data []byte) (int, error) {
 	default:
 	}
 
-	// Handle flow control with context timeout
-	if p.config.FlowControl != FlowControlNone {
-		return p.writeWithFlowControlContext(ctx, data)
-	}
+	// For CTS/RTS flow control, trust the kernel's CRTSCTS handling
+	// The kernel's hardware flow control is much faster and more reliable
+	// than userspace CTS checking for timing-critical applications like Neocortec
+	// Our userspace CTS monitoring is kept only for debugging/status display
+	fmt.Fprintf(os.Stderr, "[WRITE_PATH] WriteContext() called with flow control: %v\n", p.config.FlowControl)
 
 	// Create a channel for the write result
 	type writeResult struct {
@@ -418,14 +414,21 @@ func (p *Port) writeWithFlowControlContext(ctx context.Context, data []byte) (in
 	// Check if CTS is already asserted (fast path)
 	status, err := getModemStatus(fd)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "[FLOW_CONTROL] Error getting modem status: %v\n", err)
 		return 0, err
 	}
+
+	fmt.Fprintf(os.Stderr, "[FLOW_CONTROL] Modem status: 0x%x, CTS bit: 0x%x, CTS asserted: %v\n",
+		status, unix.TIOCM_CTS, (status&unix.TIOCM_CTS != 0))
+
 	if status&unix.TIOCM_CTS != 0 {
 		// CTS is ready, proceed with write immediately
+		fmt.Fprintf(os.Stderr, "[FLOW_CONTROL] CTS ready, writing immediately\n")
 		return p.writeDataWithContext(ctx, data)
 	}
 
 	// CTS not ready, wait for it using interrupt-driven approach
+	fmt.Fprintf(os.Stderr, "[FLOW_CONTROL] CTS not ready, waiting for CTS assertion\n")
 	return p.waitForCTSAndWrite(ctx, fd, data)
 }
 
@@ -456,14 +459,14 @@ func (p *Port) waitForCTSAndWrite(ctx context.Context, fd int, data []byte) (int
 	}
 
 	for time.Now().Before(deadline) {
-		// Calculate remaining timeout in milliseconds
+		// Calculate remaining timeout in microseconds for Neocortec precision
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			break
 		}
-		timeoutMs := int(remaining.Milliseconds())
+		timeoutMs := int(remaining.Microseconds() / 1000) // Convert μs to ms
 		if timeoutMs <= 0 {
-			timeoutMs = 1 // Minimum 1ms timeout
+			timeoutMs = 1 // Minimum 1ms timeout for epoll
 		}
 
 		// Wait for events or timeout
@@ -488,13 +491,18 @@ func (p *Port) waitForCTSAndWrite(ctx context.Context, fd int, data []byte) (int
 			// Signal change detected, check CTS status
 			status, err := getModemStatus(fd)
 			if err != nil {
+				fmt.Fprintf(os.Stderr, "[FLOW_CONTROL] Error checking CTS after epoll event: %v\n", err)
 				return 0, err
 			}
+			fmt.Fprintf(os.Stderr, "[FLOW_CONTROL] Epoll event: status=0x%x, CTS asserted: %v\n",
+				status, (status&unix.TIOCM_CTS != 0))
 			if status&unix.TIOCM_CTS != 0 {
 				// CTS is now asserted, proceed with write
+				fmt.Fprintf(os.Stderr, "[FLOW_CONTROL] CTS now ready after wait, writing data\n")
 				return p.writeDataWithContext(ctx, data)
 			}
 			// CTS still not ready, continue waiting
+			fmt.Fprintf(os.Stderr, "[FLOW_CONTROL] CTS still not ready, continuing to wait\n")
 		}
 		// n == 0 means timeout, continue loop to check overall deadline
 	}
@@ -516,9 +524,9 @@ func (p *Port) waitForCTSPolling(ctx context.Context, fd int, data []byte) (int,
 		deadline = ctxDeadline
 	}
 
-	// Use adaptive polling: start with 1μs, increase to 100μs max
-	pollInterval := time.Microsecond
-	const maxPollInterval = 100 * time.Microsecond
+	// Use ultra-fast polling for Neocortec: start with 100ns, max 10μs
+	pollInterval := 100 * time.Nanosecond
+	const maxPollInterval = 10 * time.Microsecond
 	const intervalGrowthFactor = 2
 
 	for time.Now().Before(deadline) {
@@ -530,15 +538,17 @@ func (p *Port) waitForCTSPolling(ctx context.Context, fd int, data []byte) (int,
 
 		status, err := getModemStatus(fd)
 		if err != nil {
+			fmt.Fprintf(os.Stderr, "[FLOW_CONTROL] Polling: Error getting modem status: %v\n", err)
 			return 0, err
 		}
 
 		if status&unix.TIOCM_CTS != 0 {
-			// CTS is asserted, proceed with write
+			// CTS is asserted, proceed with write immediately
+			fmt.Fprintf(os.Stderr, "[FLOW_CONTROL] Polling: CTS ready, writing data\n")
 			return p.writeDataWithContext(ctx, data)
 		}
 
-		// Sleep with adaptive interval
+		// Sleep with adaptive interval, optimized for Neocortec timing
 		time.Sleep(pollInterval)
 		if pollInterval < maxPollInterval {
 			pollInterval *= intervalGrowthFactor
@@ -556,6 +566,8 @@ func (p *Port) waitForCTSPolling(ctx context.Context, fd int, data []byte) (int,
 
 // writeDataWithContext performs the actual write with context cancellation support
 func (p *Port) writeDataWithContext(ctx context.Context, data []byte) (int, error) {
+	fmt.Fprintf(os.Stderr, "[FLOW_CONTROL] About to write %d bytes to serial port: %x\n", len(data), data)
+
 	type writeResult struct {
 		n   int
 		err error
@@ -564,15 +576,38 @@ func (p *Port) writeDataWithContext(ctx context.Context, data []byte) (int, erro
 
 	// Perform the write in a goroutine
 	go func() {
+		writeStart := time.Now()
 		n, err := p.file.Write(data)
+		writeDuration := time.Since(writeStart)
+		fmt.Fprintf(os.Stderr, "[KERNEL_WRITE] file.Write took %v: %d bytes written, err=%v\n", writeDuration, n, err)
 		resultCh <- writeResult{n: n, err: err}
 	}()
 
 	// Wait for either the write to complete or context to be cancelled
 	select {
 	case result := <-resultCh:
+		fmt.Fprintf(os.Stderr, "[FLOW_CONTROL] writeDataWithContext returning: %d bytes, err=%v\n", result.n, result.err)
 		return result.n, result.err
 	case <-ctx.Done():
+		fmt.Fprintf(os.Stderr, "[FLOW_CONTROL] writeDataWithContext timeout\n")
 		return 0, ErrWriteTimeout
 	}
+}
+
+// GetCTSStatus returns the current CTS status
+func (p *Port) GetCTSStatus() (bool, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	if p.closed {
+		return false, ErrPortClosed
+	}
+
+	fd := int(p.file.Fd())
+	status, err := getModemStatus(fd)
+	if err != nil {
+		return false, err
+	}
+
+	return status&unix.TIOCM_CTS != 0, nil
 }

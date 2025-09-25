@@ -13,6 +13,7 @@ type DataReceivedMsg struct {
 	Timestamp time.Time
 	Data      []byte
 	IsTX      bool
+	Status    string // For TX messages: "PENDING", "WRITTEN", "ERROR", empty for RX
 }
 
 type DisplayMode struct {
@@ -45,14 +46,32 @@ func (df *DataFormatter) GetDisplayMode() DisplayMode {
 func (df *DataFormatter) FormatMessage(msg DataReceivedMsg) string {
 	timestamp := msg.Timestamp.Format("15:04:05.000")
 
-	// Create styled TX/RX indicators with arrows
+	// Create styled TX/RX indicators with arrows and status
 	var indicator string
 	if msg.IsTX {
-		// TX with up-right arrow and orange color
+		// TX with up-right arrow and status-based coloring
+		var txColor lipgloss.Color
+		var statusText string
+
+		switch msg.Status {
+		case "PENDING":
+			txColor = colors.Yellow
+			statusText = "TX ○"
+		case "WRITTEN":
+			txColor = colors.Green
+			statusText = "TX ✓"
+		case "ERROR":
+			txColor = colors.Red
+			statusText = "TX ✗"
+		default:
+			txColor = colors.Peach
+			statusText = "TX"
+		}
+
 		indicator = lipgloss.NewStyle().
-			Foreground(colors.Peach).
+			Foreground(txColor).
 			Bold(true).
-			Render("↗ TX")
+			Render("↗ " + statusText)
 	} else {
 		// RX with down-left arrow and blue color
 		indicator = lipgloss.NewStyle().

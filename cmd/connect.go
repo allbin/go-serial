@@ -4,6 +4,7 @@ Copyright © 2025 Mathias Djärv <mathias.djarv@allbinary.se>
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strconv"
@@ -35,12 +36,14 @@ with real-time bidirectional communication. Features include:
 - ASCII and hex display modes
 - Connection status indicators
 - Configurable baud rate and flow control
+- CTS flow control monitoring and debugging
+- Configurable CTS timeout handling
 - Clean, responsive interface
 
 Example usage:
   serial connect /dev/ttyUSB0
   serial connect /dev/ttyUSB0 --baud 9600
-  serial connect /dev/ttyUSB0 --flow-control cts`,
+  serial connect /dev/ttyUSB0 --flow-control cts --cts-timeout 1000`,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		portPath := args[0]
@@ -48,10 +51,12 @@ Example usage:
 		// Get flags
 		baudRate, _ := cmd.Flags().GetInt("baud")
 		flowControl, _ := cmd.Flags().GetString("flow-control")
+		ctsTimeoutMs, _ := cmd.Flags().GetInt("cts-timeout")
 
 		// Configure port options
 		opts := []serial.Option{
 			serial.WithBaudRate(baudRate),
+			serial.WithCTSTimeout(time.Duration(ctsTimeoutMs) * time.Millisecond),
 		}
 
 		switch strings.ToLower(flowControl) {
@@ -75,6 +80,7 @@ func init() {
 	// Add flags for serial configuration
 	connectCmd.Flags().IntP("baud", "b", 115200, "Baud rate (default: 115200)")
 	connectCmd.Flags().StringP("flow-control", "f", "none", "Flow control: none, cts, rtscts (default: none)")
+	connectCmd.Flags().IntP("cts-timeout", "t", 500, "CTS timeout in milliseconds (default: 500)")
 }
 
 // connectModel represents the Bubble Tea model for the connect command
@@ -88,6 +94,7 @@ type connectModel struct {
 }
 
 func runConnectTUI(portPath string, opts ...serial.Option) error {
+	fmt.Fprintf(os.Stderr, "[DEBUG] Starting connect TUI\n")
 
 	// Create configuration from options to show in status bar
 	config := serial.DefaultConfig()
@@ -102,6 +109,8 @@ func runConnectTUI(portPath string, opts ...serial.Option) error {
 		DataBits:    config.DataBits,
 		StopBits:    config.StopBits,
 		Parity:      config.Parity,
+		CTSEnabled:  config.FlowControl == serial.FlowControlCTS || config.FlowControl == serial.FlowControlRTSCTS,
+		CTSStatus:   false, // Will be updated when port opens
 	}
 
 	// Create initial model with minimal dimensions - let WindowSizeMsg set proper size
@@ -132,6 +141,42 @@ func runConnectTUI(portPath string, opts ...serial.Option) error {
 		m.SetPort(port)
 
 		p.Send(models.ConnectionStatusMsg{Connected: true, Error: nil})
+
+		// Start CTS monitoring if CTS flow control is enabled
+		if connInfo.CTSEnabled {
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						// Silently handle any panics in CTS monitoring
+					}
+				}()
+
+				var lastCTSStatus bool = false
+				ticker := time.NewTicker(10 * time.Microsecond) // Check CTS every 10μs for Neocortec timing
+				defer ticker.Stop()
+
+				for {
+					select {
+					case <-m.GetContext().Done():
+						return
+					case <-ticker.C:
+						ctsStatus, err := port.GetCTSStatus()
+						if err != nil {
+							// If we can't read CTS, stop monitoring
+							return
+						}
+						if ctsStatus != lastCTSStatus {
+							// CTS status changed, notify
+							p.Send(components.CTSStatusMsg{
+								Status:    ctsStatus,
+								Timestamp: time.Now(),
+							})
+							lastCTSStatus = ctsStatus
+						}
+					}
+				}
+			}()
+		}
 
 		// Start reading data with context cancellation
 		go func() {
@@ -250,6 +295,24 @@ func (m *connectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.input.Focus()
 		}
 
+	case components.CTSStatusMsg:
+		// Update CTS status in status bar
+		m.statusBar.UpdateCTSStatus(msg.Status)
+
+		// Add CTS status change to terminal with timestamp
+		if m.IsReady() {
+			statusText := "CTS: OFF"
+			if msg.Status {
+				statusText = "CTS: ON"
+			}
+			ctsData := components.DataReceivedMsg{
+				Timestamp: msg.Timestamp,
+				Data:      []byte(statusText),
+				IsTX:      false,
+			}
+			m.terminal.AddMessage(ctsData)
+		}
+
 	case components.DataReceivedMsg:
 		// Safely handle the data message
 		defer func() {
@@ -304,17 +367,40 @@ func (m *connectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						displayData = dataToSend
 					}
 
-					// Send the data
-					go func() {
-						port.Write(dataToSend)
-					}()
+					// Send the data with proper timeout handling and status updates
+					writeStatusCh := make(chan error, 1)
+					go func(port *serial.Port, dataToSend []byte) {
+						ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+						defer cancel()
+						_, err := port.WriteContext(ctx, dataToSend)
+						writeStatusCh <- err
+						close(writeStatusCh)
+					}(port, dataToSend)
 
-					// Add to display with TX prefix
+					// Return a command that waits for write completion
+					cmds = append(cmds, func() tea.Msg {
+						err := <-writeStatusCh
+						// Send completion status
+						finalStatus := components.DataReceivedMsg{
+							Timestamp: time.Now(),
+							Data:      displayData,
+							IsTX:      true,
+						}
+						if err != nil {
+							finalStatus.Status = "ERROR"
+						} else {
+							finalStatus.Status = "WRITTEN"
+						}
+						return finalStatus
+					})
+
+					// Add to display with TX prefix (initially as PENDING)
 					timestamp := time.Now()
 					txData := components.DataReceivedMsg{
 						Timestamp: timestamp,
 						Data:      displayData,
 						IsTX:      true,
+						Status:    "PENDING",
 					}
 					// Add to both raw data store and terminal display
 					m.AddRawData(txData)

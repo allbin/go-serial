@@ -2,6 +2,7 @@ package components
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mdjarv/serial"
@@ -9,12 +10,20 @@ import (
 	"github.com/mdjarv/serial/internal/tui/styles"
 )
 
+// CTSStatusMsg represents a CTS status change
+type CTSStatusMsg struct {
+	Status    bool
+	Timestamp time.Time
+}
+
 type ConnectionInfo struct {
 	BaudRate    int
 	FlowControl serial.FlowControl
 	DataBits    int
 	StopBits    int
 	Parity      serial.Parity
+	CTSStatus   bool
+	CTSEnabled  bool
 }
 
 type StatusBar struct {
@@ -45,6 +54,12 @@ func (sb *StatusBar) SetWidth(width int) {
 
 func (sb *StatusBar) SetConnectionInfo(info *ConnectionInfo) {
 	sb.connectionInfo = info
+}
+
+func (sb *StatusBar) UpdateCTSStatus(ctsStatus bool) {
+	if sb.connectionInfo != nil {
+		sb.connectionInfo.CTSStatus = ctsStatus
+	}
 }
 
 func (sb *StatusBar) SetConnecting() {
@@ -176,12 +191,21 @@ func (sb *StatusBar) ComprehensiveStatusBar(inputMode, sendingMode string, conne
 	// Section 4: Connection info (like file type with icon)
 	var connInfo string
 	if sb.connectionInfo != nil {
-		connInfo = fmt.Sprintf("⚡ %d baud %d%s%d %s",
+		ctsInfo := ""
+		if sb.connectionInfo.CTSEnabled {
+			if sb.connectionInfo.CTSStatus {
+				ctsInfo = " CTS:✓"
+			} else {
+				ctsInfo = " CTS:✗"
+			}
+		}
+		connInfo = fmt.Sprintf("⚡ %d baud %d%s%d %s%s",
 			sb.connectionInfo.BaudRate,
 			sb.connectionInfo.DataBits,
 			parityToString(sb.connectionInfo.Parity),
 			sb.connectionInfo.StopBits,
-			flowControlToString(sb.connectionInfo.FlowControl))
+			flowControlToString(sb.connectionInfo.FlowControl),
+			ctsInfo)
 	} else {
 		connInfo = "⚡ serial"
 	}
