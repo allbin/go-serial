@@ -2,6 +2,14 @@ package serial
 
 import "time"
 
+// WriteMode represents the write synchronization mode
+type WriteMode int
+
+const (
+	WriteModeBuffered WriteMode = iota // Default: kernel buffers writes
+	WriteModeSynced                    // O_SYNC: writes block until hardware transmission
+)
+
 // Config holds the configuration for a serial port
 type Config struct {
 	BaudRate        int
@@ -12,6 +20,7 @@ type Config struct {
 	CTSTimeout      time.Duration
 	ReadBufferSize  int
 	WriteBufferSize int
+	WriteMode       WriteMode // Controls write synchronization behavior
 }
 
 // Option is a functional option for configuring a serial port
@@ -28,6 +37,7 @@ func DefaultConfig() Config {
 		CTSTimeout:      500 * time.Millisecond,
 		ReadBufferSize:  4096,
 		WriteBufferSize: 4096,
+		WriteMode:       WriteModeBuffered, // Default to kernel buffering
 	}
 }
 
@@ -109,6 +119,22 @@ func WithWriteBufferSize(size int) Option {
 			return ErrInvalidConfig
 		}
 		c.WriteBufferSize = size
+		return nil
+	}
+}
+
+// WithWriteMode sets the write synchronization mode
+func WithWriteMode(mode WriteMode) Option {
+	return func(c *Config) error {
+		c.WriteMode = mode
+		return nil
+	}
+}
+
+// WithSyncWrite enables synchronous writes (O_SYNC) for guaranteed transmission
+func WithSyncWrite() Option {
+	return func(c *Config) error {
+		c.WriteMode = WriteModeSynced
 		return nil
 	}
 }

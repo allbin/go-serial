@@ -147,8 +147,16 @@ func Open(device string, opts ...Option) (*Port, error) {
 		}
 	}
 
-	// Open the device file
-	file, err := os.OpenFile(device, os.O_RDWR, 0)
+	// Open the device file with appropriate flags based on write mode
+	flags := os.O_RDWR
+	if config.WriteMode == WriteModeSynced {
+		flags |= os.O_SYNC // Synchronous writes - block until data is transmitted
+		fmt.Fprintf(os.Stderr, "[SERIAL_OPEN] Opening with O_SYNC for synchronous writes\n")
+	} else {
+		fmt.Fprintf(os.Stderr, "[SERIAL_OPEN] Opening with buffered writes\n")
+	}
+
+	file, err := os.OpenFile(device, flags, 0)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, ErrDeviceNotFound
@@ -576,21 +584,80 @@ func (p *Port) writeDataWithContext(ctx context.Context, data []byte) (int, erro
 
 	// Perform the write in a goroutine
 	go func() {
+		fmt.Fprintf(os.Stderr, "[KERNEL_WRITE] About to call file.Write() with %d bytes\n", len(data))
 		writeStart := time.Now()
 		n, err := p.file.Write(data)
 		writeDuration := time.Since(writeStart)
-		fmt.Fprintf(os.Stderr, "[KERNEL_WRITE] file.Write took %v: %d bytes written, err=%v\n", writeDuration, n, err)
+		fmt.Fprintf(os.Stderr, "[KERNEL_WRITE] file.Write completed: took %v, %d bytes written, err=%v\n", writeDuration, n, err)
 		resultCh <- writeResult{n: n, err: err}
+		fmt.Fprintf(os.Stderr, "[KERNEL_WRITE] Result sent to channel\n")
 	}()
 
 	// Wait for either the write to complete or context to be cancelled
+	fmt.Fprintf(os.Stderr, "[KERNEL_WRITE] Waiting for write completion or timeout\n")
 	select {
 	case result := <-resultCh:
-		fmt.Fprintf(os.Stderr, "[FLOW_CONTROL] writeDataWithContext returning: %d bytes, err=%v\n", result.n, result.err)
+		fmt.Fprintf(os.Stderr, "[KERNEL_WRITE] WriteContext returning: %d bytes, err=%v\n", result.n, result.err)
 		return result.n, result.err
 	case <-ctx.Done():
-		fmt.Fprintf(os.Stderr, "[FLOW_CONTROL] writeDataWithContext timeout\n")
+		fmt.Fprintf(os.Stderr, "[KERNEL_WRITE] WriteContext timeout after context cancelled\n")
 		return 0, ErrWriteTimeout
+	}
+}
+
+// Drain waits until all output written to the port has been transmitted
+// This is equivalent to the tcdrain() system call
+func (p *Port) Drain() error {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	if p.closed {
+		return ErrPortClosed
+	}
+
+	fd := int(p.file.Fd())
+	// Use TCSBRK with arg 1 to drain the output queue (equivalent to tcdrain)
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), unix.TCSBRK, 1)
+	if errno != 0 {
+		return fmt.Errorf("tcdrain failed: %v", errno)
+	}
+	fmt.Fprintf(os.Stderr, "[DRAIN] Output queue drained successfully\n")
+	return nil
+}
+
+// DrainContext waits until all output written to the port has been transmitted with context timeout
+func (p *Port) DrainContext(ctx context.Context) error {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	if p.closed {
+		return ErrPortClosed
+	}
+
+	// Check if context is already cancelled
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	// Perform drain in a goroutine to support context cancellation
+	type drainResult struct {
+		err error
+	}
+	resultCh := make(chan drainResult, 1)
+
+	go func() {
+		err := p.Drain()
+		resultCh <- drainResult{err: err}
+	}()
+
+	// Wait for either the drain to complete or context to be cancelled
+	select {
+	case result := <-resultCh:
+		return result.err
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 

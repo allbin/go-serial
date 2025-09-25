@@ -57,6 +57,9 @@ func (df *DataFormatter) FormatMessage(msg DataReceivedMsg) string {
 		case "PENDING":
 			txColor = colors.Yellow
 			statusText = "TX ○"
+		case "TRANSMITTING":
+			txColor = colors.Blue
+			statusText = "TX ⏸" // Pause symbol for blocked/transmitting
 		case "WRITTEN":
 			txColor = colors.Green
 			statusText = "TX ✓"

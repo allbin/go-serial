@@ -52,11 +52,20 @@ Example usage:
 		baudRate, _ := cmd.Flags().GetInt("baud")
 		flowControl, _ := cmd.Flags().GetString("flow-control")
 		ctsTimeoutMs, _ := cmd.Flags().GetInt("cts-timeout")
+		syncWrites, _ := cmd.Flags().GetBool("sync-writes")
 
 		// Configure port options
 		opts := []serial.Option{
 			serial.WithBaudRate(baudRate),
 			serial.WithCTSTimeout(time.Duration(ctsTimeoutMs) * time.Millisecond),
+		}
+
+		// Configure write mode
+		if syncWrites {
+			fmt.Fprintf(os.Stderr, "[DEBUG] Sync writes enabled via flag\n")
+			opts = append(opts, serial.WithSyncWrite())
+		} else {
+			fmt.Fprintf(os.Stderr, "[DEBUG] Sync writes disabled (default buffered)\n")
 		}
 
 		switch strings.ToLower(flowControl) {
@@ -81,6 +90,7 @@ func init() {
 	connectCmd.Flags().IntP("baud", "b", 115200, "Baud rate (default: 115200)")
 	connectCmd.Flags().StringP("flow-control", "f", "none", "Flow control: none, cts, rtscts (default: none)")
 	connectCmd.Flags().IntP("cts-timeout", "t", 500, "CTS timeout in milliseconds (default: 500)")
+	connectCmd.Flags().Bool("sync-writes", false, "Enable synchronous writes (O_SYNC) for guaranteed transmission")
 }
 
 // connectModel represents the Bubble Tea model for the connect command
@@ -369,15 +379,32 @@ func (m *connectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 					// Send the data with proper timeout handling and status updates
 					writeStatusCh := make(chan error, 1)
+					transmittingStatusCh := make(chan bool, 1)
+
 					go func(port *serial.Port, dataToSend []byte) {
 						ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 						defer cancel()
+
+						// Signal that we're about to start writing (may block on CTS)
+						transmittingStatusCh <- true
+
 						_, err := port.WriteContext(ctx, dataToSend)
 						writeStatusCh <- err
 						close(writeStatusCh)
 					}(port, dataToSend)
 
-					// Return a command that waits for write completion
+					// Return commands for both status updates
+					cmds = append(cmds, func() tea.Msg {
+						// Wait for write to start - show TRANSMITTING status
+						<-transmittingStatusCh
+						return components.DataReceivedMsg{
+							Timestamp: time.Now(),
+							Data:      displayData,
+							IsTX:      true,
+							Status:    "TRANSMITTING",
+						}
+					})
+
 					cmds = append(cmds, func() tea.Msg {
 						err := <-writeStatusCh
 						// Send completion status
