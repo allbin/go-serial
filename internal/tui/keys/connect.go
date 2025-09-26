@@ -10,6 +10,9 @@ type ConnectKeys struct {
 	ToggleSendMode key.Binding
 	Up             key.Binding
 	Down           key.Binding
+	VisualMode     key.Binding
+	GotoTop        key.Binding
+	GotoBottom     key.Binding
 }
 
 func NewConnectKeys() ConnectKeys {
@@ -35,16 +38,29 @@ func NewConnectKeys() ConnectKeys {
 			key.WithKeys("down", "j"),
 			key.WithHelp("↓/j", "down"),
 		),
+		VisualMode: key.NewBinding(
+			key.WithKeys("v"),
+			key.WithHelp("v", "visual mode"),
+		),
+		GotoTop: key.NewBinding(
+			key.WithKeys("g"),
+			key.WithHelp("g", "goto top"),
+		),
+		GotoBottom: key.NewBinding(
+			key.WithKeys("G"),
+			key.WithHelp("G", "goto bottom"),
+		),
 	}
 }
 
 func (k ConnectKeys) ShortHelp() []key.Binding {
-	return []key.Binding{k.Help, k.InsertMode, k.Enter, k.Quit}
+	return []key.Binding{k.Help, k.InsertMode, k.VisualMode, k.Enter, k.Quit}
 }
 
 func (k ConnectKeys) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.InsertMode, k.Escape, k.Clear, k.ToggleHex, k.ToggleASCII},
+		{k.InsertMode, k.VisualMode, k.Escape, k.Clear, k.ToggleHex, k.ToggleASCII},
+		{k.GotoTop, k.GotoBottom, k.Up, k.Down},
 		{k.Enter, k.Help, k.Quit},
 	}
 }

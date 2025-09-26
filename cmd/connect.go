@@ -15,12 +15,20 @@ import (
 	"github.com/allbin/serial/internal/tui/components"
 	"github.com/allbin/serial/internal/tui/keys"
 	"github.com/allbin/serial/internal/tui/models"
-	"github.com/allbin/serial/internal/tui/styles"
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
+)
+
+// UI element heights
+const (
+	statusBarHeight    = 1 // Status bar at bottom
+	inputAreaHeight    = 3 // Input field with border
+	contentBorderHeight = 1 // Top border on content
+	tableHeaderHeight  = 1 // Table header row
+	tableBorderHeight  = 2 // Table top and bottom borders
 )
 
 // connectCmd represents the connect command
@@ -96,11 +104,13 @@ func init() {
 // connectModel represents the Bubble Tea model for the connect command
 type connectModel struct {
 	*models.SerialModel
-	terminal  *components.Terminal
+	terminal  *components.TerminalTable
 	statusBar *components.StatusBar
 	input     *components.Input
 	help      help.Model
 	keys      keys.ConnectKeys
+	width     int // Terminal width
+	height    int // Terminal height
 }
 
 func runConnectTUI(portPath string, opts ...serial.Option) error {
@@ -127,7 +137,7 @@ func runConnectTUI(portPath string, opts ...serial.Option) error {
 	serialModel := models.NewSerialModel(portPath)
 	m := connectModel{
 		SerialModel: serialModel,
-		terminal:    components.NewTerminal(0, 0), // Will be properly sized by WindowSizeMsg
+		terminal:    components.NewTerminalTable(0, 0), // Will be properly sized by WindowSizeMsg
 		statusBar:   components.NewStatusBar("Serial Connect", portPath),
 		input:       components.NewInput("Type message and press Enter to send..."),
 		help:        help.New(),
@@ -279,21 +289,28 @@ func (m *connectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		// Input area height (includes border)
-		inputHeight := 3
-		// Status bar is single line
-		statusBarHeight := 1
-		verticalMarginHeight := inputHeight + statusBarHeight
+		// Store terminal dimensions
+		m.width = msg.Width
+		m.height = msg.Height
+
+		// Calculate available height for table
+		// Total space - status bar - input area
+		totalUIOverhead := statusBarHeight + inputAreaHeight
+		tableHeight := m.height - totalUIOverhead
+
+		// Ensure minimum height
+		if tableHeight < 5 {
+			tableHeight = 5
+		}
+
+		// Set component sizes
+		m.terminal.SetSize(m.width, tableHeight)
+		m.input.SetWidth(m.width)
+		m.statusBar.SetWidth(m.width)
 
 		if !m.IsReady() {
-			m.terminal.SetSize(msg.Width, msg.Height-verticalMarginHeight)
-			m.input.SetWidth(msg.Width)
 			m.SetReady(true)
-		} else {
-			m.terminal.SetSize(msg.Width, msg.Height-verticalMarginHeight)
-			m.input.SetWidth(msg.Width)
 		}
-		m.statusBar.SetWidth(msg.Width)
 
 	case models.ConnectionStatusMsg:
 		m.SetConnected(msg.Connected)
@@ -440,6 +457,12 @@ func (m *connectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.Cleanup()
 				return m, tea.Quit
 
+			case key.Matches(msg, m.keys.Escape):
+				// In normal mode, escape returns to follow mode if in visual mode
+				if m.terminal.GetViewMode() == components.ViewModeVisual {
+					m.terminal.SetViewMode(components.ViewModeFollow)
+				}
+
 			case key.Matches(msg, m.keys.InsertMode):
 				m.SetInputMode(models.InputModeInsert)
 				m.input.Focus()
@@ -462,6 +485,25 @@ func (m *connectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			case key.Matches(msg, m.keys.ToggleSendMode):
 				m.input.ToggleSendingMode()
+
+			case key.Matches(msg, m.keys.VisualMode):
+				m.terminal.SetViewMode(components.ViewModeVisual)
+
+			case key.Matches(msg, m.keys.GotoTop):
+				if m.terminal.GetViewMode() == components.ViewModeVisual {
+					// In visual mode, navigate to top
+					// The table component will handle this via Update
+				}
+
+			case key.Matches(msg, m.keys.GotoBottom):
+				if m.terminal.GetViewMode() == components.ViewModeVisual {
+					// In visual mode, navigate to bottom and return to follow mode
+					m.terminal.SetViewMode(components.ViewModeFollow)
+				}
+
+			case key.Matches(msg, m.keys.Up), key.Matches(msg, m.keys.Down):
+				// Navigation keys are handled by the table in visual mode
+				// No action needed here as Update passes to table
 			}
 		}
 	}
@@ -473,9 +515,13 @@ func (m *connectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, cmd)
 	}
 
-	// Update terminal viewport for window resize messages
+	// Update terminal for window resize and navigation messages
 	switch msg.(type) {
 	case tea.WindowSizeMsg:
+		_, cmd = m.terminal.Update(msg)
+		cmds = append(cmds, cmd)
+	case tea.KeyMsg:
+		// Pass key messages to terminal for navigation in visual mode
 		_, cmd = m.terminal.Update(msg)
 		cmds = append(cmds, cmd)
 	}
@@ -505,21 +551,19 @@ func (m *connectModel) View() string {
 	sendingMode := m.input.GetSendingMode().String()
 	timestamp := time.Now().Format("15:04:05")
 
-	// Set the status bar width to match terminal
-	terminalWidth := 80
-	if m.IsReady() {
-		terminalWidth = m.terminal.GetViewport().Width
+	// Use stored terminal width (set by WindowSizeMsg)
+	terminalWidth := m.width
+	if terminalWidth <= 0 {
+		terminalWidth = 80 // Fallback for initial render
 	}
-	m.statusBar.SetWidth(terminalWidth)
 
-	statusBar := m.statusBar.ComprehensiveStatusBar(inputMode, sendingMode, m.IsConnected(), timestamp)
+	viewMode := m.terminal.GetViewModeString()
+	statusBar := m.statusBar.ComprehensiveStatusBar(inputMode, sendingMode, viewMode, m.IsConnected(), timestamp)
 
 	// Layout without header, with comprehensive status bar at bottom
-	contentWithBorder := styles.ContentBorderStyle.Render(content)
-
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
-		contentWithBorder,
+		content,
 		input,
 		statusBar,
 	)

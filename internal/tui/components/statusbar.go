@@ -135,7 +135,7 @@ func (sb *StatusBar) ViewAsHeader(connected bool) string {
 }
 
 // ComprehensiveStatusBar renders a comprehensive status bar with all connection info
-func (sb *StatusBar) ComprehensiveStatusBar(inputMode, sendingMode string, connected bool, timestamp string) string {
+func (sb *StatusBar) ComprehensiveStatusBar(inputMode, sendingMode, viewMode string, connected bool, timestamp string) string {
 	terminalWidth := sb.width
 	if terminalWidth <= 0 {
 		terminalWidth = 80
@@ -152,12 +152,22 @@ func (sb *StatusBar) ComprehensiveStatusBar(inputMode, sendingMode string, conne
 			Padding(0, 1)
 		modeText = "INSERT"
 	} else {
-		modeStyle = lipgloss.NewStyle().
-			Foreground(colors.Base).
-			Background(colors.Blue).
-			Bold(true).
-			Padding(0, 1)
-		modeText = "NORMAL"
+		// Show view mode for normal mode
+		if viewMode == "VISUAL" {
+			modeStyle = lipgloss.NewStyle().
+				Foreground(colors.Base).
+				Background(colors.Peach).
+				Bold(true).
+				Padding(0, 1)
+			modeText = "VISUAL"
+		} else {
+			modeStyle = lipgloss.NewStyle().
+				Foreground(colors.Base).
+				Background(colors.Blue).
+				Bold(true).
+				Padding(0, 1)
+			modeText = "FOLLOW"
+		}
 	}
 	mode := modeStyle.Render(modeText)
 
@@ -247,10 +257,17 @@ func (sb *StatusBar) ComprehensiveStatusBar(inputMode, sendingMode string, conne
 	// Build right side with divider
 	rightSide := lipgloss.JoinHorizontal(lipgloss.Left, connectionDetails, divider, time)
 
-	// Calculate spacer
+	// Calculate spacer and handle width overflow
 	leftWidth := lipgloss.Width(leftSide)
 	rightWidth := lipgloss.Width(rightSide)
-	spacerWidth := terminalWidth - leftWidth - rightWidth
+	totalContentWidth := leftWidth + rightWidth
+
+	// If content is too wide for terminal, use compact version
+	if totalContentWidth+2 > terminalWidth { // +2 for minimum spacer
+		return sb.compactStatusBar(inputMode, viewMode, connected, timestamp, terminalWidth)
+	}
+
+	spacerWidth := terminalWidth - totalContentWidth
 	if spacerWidth < 1 {
 		spacerWidth = 1
 	}
@@ -264,6 +281,81 @@ func (sb *StatusBar) ComprehensiveStatusBar(inputMode, sendingMode string, conne
 		Width(terminalWidth)
 
 	content := lipgloss.JoinHorizontal(lipgloss.Left, leftSide, spacer, rightSide)
+	return statusBarStyle.Render(content)
+}
+
+// compactStatusBar creates a minimal status bar for narrow terminals
+func (sb *StatusBar) compactStatusBar(inputMode, viewMode string, connected bool, timestamp string, terminalWidth int) string {
+	// Mode indicator
+	var modeStyle lipgloss.Style
+	var modeText string
+	if inputMode == "INSERT" {
+		modeStyle = lipgloss.NewStyle().
+			Foreground(colors.Base).
+			Background(colors.Green).
+			Bold(true).
+			Padding(0, 1)
+		modeText = "INSERT"
+	} else {
+		if viewMode == "VISUAL" {
+			modeStyle = lipgloss.NewStyle().
+				Foreground(colors.Base).
+				Background(colors.Peach).
+				Bold(true).
+				Padding(0, 1)
+			modeText = "VISUAL"
+		} else {
+			modeStyle = lipgloss.NewStyle().
+				Foreground(colors.Base).
+				Background(colors.Blue).
+				Bold(true).
+				Padding(0, 1)
+			modeText = "FOLLOW"
+		}
+	}
+	mode := modeStyle.Render(modeText)
+
+	// Connection indicator
+	var connIndicator string
+	var connStyle lipgloss.Style
+	if connected {
+		connStyle = lipgloss.NewStyle().Foreground(colors.Green)
+		connIndicator = "●"
+	} else {
+		connStyle = lipgloss.NewStyle().Foreground(colors.Red)
+		connIndicator = "○"
+	}
+	connection := connStyle.Render(connIndicator)
+
+	// Truncated port path
+	portPath := sb.portPath
+	maxPortLen := terminalWidth - lipgloss.Width(mode) - 3 - 2 // mode + connection + spacing + margin
+	if len(portPath) > maxPortLen && maxPortLen > 3 {
+		portPath = portPath[:maxPortLen-3] + "..."
+	}
+
+	portStyle := lipgloss.NewStyle().
+		Foreground(colors.Mauve).
+		Padding(0, 1)
+	port := portStyle.Render(portPath)
+
+	// Build minimal status bar
+	content := lipgloss.JoinHorizontal(lipgloss.Left, mode, port, connection)
+
+	// Apply background and ensure it fills the width
+	statusBarStyle := lipgloss.NewStyle().
+		Foreground(colors.Text).
+		Background(colors.Surface0).
+		Width(terminalWidth)
+
+	// Calculate remaining space and add padding if needed
+	contentWidth := lipgloss.Width(content)
+	if contentWidth < terminalWidth {
+		paddingWidth := terminalWidth - contentWidth
+		padding := lipgloss.NewStyle().Width(paddingWidth).Render("")
+		content = lipgloss.JoinHorizontal(lipgloss.Left, content, padding)
+	}
+
 	return statusBarStyle.Render(content)
 }
 

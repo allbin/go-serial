@@ -290,7 +290,7 @@ func (m *listenModel) View() string {
 	}
 	m.statusBar.SetWidth(terminalWidth)
 
-	statusBar := m.statusBar.ComprehensiveStatusBar(inputMode, sendingMode, m.IsConnected(), timestamp)
+	statusBar := m.statusBar.ComprehensiveStatusBar(inputMode, sendingMode, "FOLLOW", m.IsConnected(), timestamp)
 
 	// Layout without header, with comprehensive status bar at bottom
 	contentWithBorder := styles.ContentBorderStyle.Render(content)
