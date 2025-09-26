@@ -138,7 +138,7 @@ func runListenTUI(portPath string, opts ...serial.Option) error {
 				}
 			}()
 
-			buffer := make([]byte, 1024)
+			buffer := make([]byte, 4096)
 			for {
 				select {
 				case <-m.GetContext().Done():
@@ -156,6 +156,12 @@ func runListenTUI(portPath string, opts ...serial.Option) error {
 						continue
 					}
 					if n > 0 {
+						// Debug: Log raw bytes received to file
+						if debugFile, err := os.OpenFile("serial_debug.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); err == nil {
+							fmt.Fprintf(debugFile, "[SERIAL_RX] Read %d bytes: %X\n", n, buffer[:n])
+							debugFile.Close()
+						}
+
 						// Send raw data with timestamp - formatting will happen in Update method
 						data := make([]byte, n)
 						copy(data, buffer[:n])

@@ -197,7 +197,7 @@ func runConnectTUI(portPath string, opts ...serial.Option) error {
 				}
 			}()
 
-			buffer := make([]byte, 1024)
+			buffer := make([]byte, 4096)
 			for {
 				select {
 				case <-m.GetContext().Done():

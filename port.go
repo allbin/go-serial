@@ -151,9 +151,9 @@ func Open(device string, opts ...Option) (*Port, error) {
 	flags := os.O_RDWR
 	if config.WriteMode == WriteModeSynced {
 		flags |= os.O_SYNC // Synchronous writes - block until data is transmitted
-		fmt.Fprintf(os.Stderr, "[SERIAL_OPEN] Opening with O_SYNC for synchronous writes\n")
+		// fmt.Fprintf(os.Stderr, "[SERIAL_OPEN] Opening with O_SYNC for synchronous writes\n")
 	} else {
-		fmt.Fprintf(os.Stderr, "[SERIAL_OPEN] Opening with buffered writes\n")
+		// fmt.Fprintf(os.Stderr, "[SERIAL_OPEN] Opening with buffered writes\n")
 	}
 
 	file, err := os.OpenFile(device, flags, 0)
@@ -245,7 +245,9 @@ func Open(device string, opts ...Option) (*Port, error) {
 
 	// Input flags - disable canonical mode, echo, etc.
 	term.Iflag &^= unix.IGNBRK | unix.BRKINT | unix.PARMRK | unix.ISTRIP |
-		unix.INLCR | unix.IGNCR | unix.ICRNL | unix.IXON
+		unix.INLCR | unix.IGNCR | unix.ICRNL | unix.IXON | unix.INPCK
+	// Ensure IGNPAR is set to ignore parity errors (important for binary data)
+	term.Iflag |= unix.IGNPAR
 
 	// Output flags - disable output processing
 	term.Oflag &^= unix.OPOST
@@ -253,14 +255,24 @@ func Open(device string, opts ...Option) (*Port, error) {
 	// Local flags - disable canonical mode and echo
 	term.Lflag &^= unix.ECHO | unix.ECHONL | unix.ICANON | unix.ISIG | unix.IEXTEN
 
-	// Control characters - blocking read (wait for at least 1 byte, no timeout)
-	term.Cc[unix.VMIN] = 1
-	term.Cc[unix.VTIME] = 0
+	// Control characters - blocking read with longer timeout
+	term.Cc[unix.VMIN] = 1  // Wait for at least 1 byte
+	term.Cc[unix.VTIME] = 5 // 500ms timeout between bytes
 
 	// Apply the configuration
 	if err := setTermios(fd, &term); err != nil {
 		file.Close()
 		return nil, err
+	}
+
+	// Debug: Log the applied configuration to file
+	if debugFile, err := os.OpenFile("serial_debug.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); err == nil {
+		fmt.Fprintf(debugFile, "[SERIAL_CONFIG] Port %s opened with:\n", device)
+		fmt.Fprintf(debugFile, "[SERIAL_CONFIG] - Baud: %d\n", config.BaudRate)
+		fmt.Fprintf(debugFile, "[SERIAL_CONFIG] - Data: %d bits, Stop: %d bits, Parity: %d\n", config.DataBits, config.StopBits, config.Parity)
+		fmt.Fprintf(debugFile, "[SERIAL_CONFIG] - Flow Control: %d\n", config.FlowControl)
+		fmt.Fprintf(debugFile, "[SERIAL_CONFIG] - VMIN: %d, VTIME: %d\n", term.Cc[unix.VMIN], term.Cc[unix.VTIME])
+		debugFile.Close()
 	}
 
 	port := &Port{
@@ -315,12 +327,12 @@ func (p *Port) Write(data []byte) (int, error) {
 
 	// For CTS/RTS flow control, trust the kernel's CRTSCTS handling
 	// (same logic as WriteContext)
-	fmt.Fprintf(os.Stderr, "[WRITE_PATH] Write() called with flow control: %v\n", p.config.FlowControl)
+	// fmt.Fprintf(os.Stderr, "[WRITE_PATH] Write() called with flow control: %v\n", p.config.FlowControl)
 
-	writeStart := time.Now()
+	// writeStart := time.Now()
 	n, err := p.file.Write(data)
-	writeDuration := time.Since(writeStart)
-	fmt.Fprintf(os.Stderr, "[KERNEL_WRITE] Write() took %v: %d bytes written, err=%v\n", writeDuration, n, err)
+	// writeDuration := time.Since(writeStart)
+	// fmt.Fprintf(os.Stderr, "[KERNEL_WRITE] Write() took %v: %d bytes written, err=%v\n", writeDuration, n, err)
 	return n, err
 }
 
@@ -391,7 +403,7 @@ func (p *Port) WriteContext(ctx context.Context, data []byte) (int, error) {
 	// The kernel's hardware flow control is much faster and more reliable
 	// than userspace CTS checking for timing-critical applications like Neocortec
 	// Our userspace CTS monitoring is kept only for debugging/status display
-	fmt.Fprintf(os.Stderr, "[WRITE_PATH] WriteContext() called with flow control: %v\n", p.config.FlowControl)
+	// fmt.Fprintf(os.Stderr, "[WRITE_PATH] WriteContext() called with flow control: %v\n", p.config.FlowControl)
 
 	// Create a channel for the write result
 	type writeResult struct {
@@ -422,21 +434,21 @@ func (p *Port) writeWithFlowControlContext(ctx context.Context, data []byte) (in
 	// Check if CTS is already asserted (fast path)
 	status, err := getModemStatus(fd)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[FLOW_CONTROL] Error getting modem status: %v\n", err)
+		// fmt.Fprintf(os.Stderr, "[FLOW_CONTROL] Error getting modem status: %v\n", err)
 		return 0, err
 	}
 
-	fmt.Fprintf(os.Stderr, "[FLOW_CONTROL] Modem status: 0x%x, CTS bit: 0x%x, CTS asserted: %v\n",
-		status, unix.TIOCM_CTS, (status&unix.TIOCM_CTS != 0))
+	// fmt.Fprintf(os.Stderr, "[FLOW_CONTROL] Modem status: 0x%x, CTS bit: 0x%x, CTS asserted: %v\n",
+	//	status, unix.TIOCM_CTS, (status&unix.TIOCM_CTS != 0))
 
 	if status&unix.TIOCM_CTS != 0 {
 		// CTS is ready, proceed with write immediately
-		fmt.Fprintf(os.Stderr, "[FLOW_CONTROL] CTS ready, writing immediately\n")
+		// fmt.Fprintf(os.Stderr, "[FLOW_CONTROL] CTS ready, writing immediately\n")
 		return p.writeDataWithContext(ctx, data)
 	}
 
 	// CTS not ready, wait for it using interrupt-driven approach
-	fmt.Fprintf(os.Stderr, "[FLOW_CONTROL] CTS not ready, waiting for CTS assertion\n")
+	// fmt.Fprintf(os.Stderr, "[FLOW_CONTROL] CTS not ready, waiting for CTS assertion\n")
 	return p.waitForCTSAndWrite(ctx, fd, data)
 }
 
@@ -499,18 +511,18 @@ func (p *Port) waitForCTSAndWrite(ctx context.Context, fd int, data []byte) (int
 			// Signal change detected, check CTS status
 			status, err := getModemStatus(fd)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "[FLOW_CONTROL] Error checking CTS after epoll event: %v\n", err)
+				// fmt.Fprintf(os.Stderr, "[FLOW_CONTROL] Error checking CTS after epoll event: %v\n", err)
 				return 0, err
 			}
-			fmt.Fprintf(os.Stderr, "[FLOW_CONTROL] Epoll event: status=0x%x, CTS asserted: %v\n",
-				status, (status&unix.TIOCM_CTS != 0))
+			// fmt.Fprintf(os.Stderr, "[FLOW_CONTROL] Epoll event: status=0x%x, CTS asserted: %v\n",
+			//	status, (status&unix.TIOCM_CTS != 0))
 			if status&unix.TIOCM_CTS != 0 {
 				// CTS is now asserted, proceed with write
-				fmt.Fprintf(os.Stderr, "[FLOW_CONTROL] CTS now ready after wait, writing data\n")
+				// fmt.Fprintf(os.Stderr, "[FLOW_CONTROL] CTS now ready after wait, writing data\n")
 				return p.writeDataWithContext(ctx, data)
 			}
 			// CTS still not ready, continue waiting
-			fmt.Fprintf(os.Stderr, "[FLOW_CONTROL] CTS still not ready, continuing to wait\n")
+			// fmt.Fprintf(os.Stderr, "[FLOW_CONTROL] CTS still not ready, continuing to wait\n")
 		}
 		// n == 0 means timeout, continue loop to check overall deadline
 	}
@@ -546,13 +558,13 @@ func (p *Port) waitForCTSPolling(ctx context.Context, fd int, data []byte) (int,
 
 		status, err := getModemStatus(fd)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[FLOW_CONTROL] Polling: Error getting modem status: %v\n", err)
+			// fmt.Fprintf(os.Stderr, "[FLOW_CONTROL] Polling: Error getting modem status: %v\n", err)
 			return 0, err
 		}
 
 		if status&unix.TIOCM_CTS != 0 {
 			// CTS is asserted, proceed with write immediately
-			fmt.Fprintf(os.Stderr, "[FLOW_CONTROL] Polling: CTS ready, writing data\n")
+			// fmt.Fprintf(os.Stderr, "[FLOW_CONTROL] Polling: CTS ready, writing data\n")
 			return p.writeDataWithContext(ctx, data)
 		}
 
@@ -574,7 +586,7 @@ func (p *Port) waitForCTSPolling(ctx context.Context, fd int, data []byte) (int,
 
 // writeDataWithContext performs the actual write with context cancellation support
 func (p *Port) writeDataWithContext(ctx context.Context, data []byte) (int, error) {
-	fmt.Fprintf(os.Stderr, "[FLOW_CONTROL] About to write %d bytes to serial port: %x\n", len(data), data)
+	// fmt.Fprintf(os.Stderr, "[FLOW_CONTROL] About to write %d bytes to serial port: %x\n", len(data), data)
 
 	type writeResult struct {
 		n   int
@@ -584,23 +596,23 @@ func (p *Port) writeDataWithContext(ctx context.Context, data []byte) (int, erro
 
 	// Perform the write in a goroutine
 	go func() {
-		fmt.Fprintf(os.Stderr, "[KERNEL_WRITE] About to call file.Write() with %d bytes\n", len(data))
-		writeStart := time.Now()
+		// fmt.Fprintf(os.Stderr, "[KERNEL_WRITE] About to call file.Write() with %d bytes\n", len(data))
+		// writeStart := time.Now()
 		n, err := p.file.Write(data)
-		writeDuration := time.Since(writeStart)
-		fmt.Fprintf(os.Stderr, "[KERNEL_WRITE] file.Write completed: took %v, %d bytes written, err=%v\n", writeDuration, n, err)
+		// writeDuration := time.Since(writeStart)
+		// fmt.Fprintf(os.Stderr, "[KERNEL_WRITE] file.Write completed: took %v, %d bytes written, err=%v\n", writeDuration, n, err)
 		resultCh <- writeResult{n: n, err: err}
-		fmt.Fprintf(os.Stderr, "[KERNEL_WRITE] Result sent to channel\n")
+		// fmt.Fprintf(os.Stderr, "[KERNEL_WRITE] Result sent to channel\n")
 	}()
 
 	// Wait for either the write to complete or context to be cancelled
-	fmt.Fprintf(os.Stderr, "[KERNEL_WRITE] Waiting for write completion or timeout\n")
+	// fmt.Fprintf(os.Stderr, "[KERNEL_WRITE] Waiting for write completion or timeout\n")
 	select {
 	case result := <-resultCh:
-		fmt.Fprintf(os.Stderr, "[KERNEL_WRITE] WriteContext returning: %d bytes, err=%v\n", result.n, result.err)
+		// fmt.Fprintf(os.Stderr, "[KERNEL_WRITE] WriteContext returning: %d bytes, err=%v\n", result.n, result.err)
 		return result.n, result.err
 	case <-ctx.Done():
-		fmt.Fprintf(os.Stderr, "[KERNEL_WRITE] WriteContext timeout after context cancelled\n")
+		// fmt.Fprintf(os.Stderr, "[KERNEL_WRITE] WriteContext timeout after context cancelled\n")
 		return 0, ErrWriteTimeout
 	}
 }
@@ -621,7 +633,7 @@ func (p *Port) Drain() error {
 	if errno != 0 {
 		return fmt.Errorf("tcdrain failed: %v", errno)
 	}
-	fmt.Fprintf(os.Stderr, "[DRAIN] Output queue drained successfully\n")
+	// fmt.Fprintf(os.Stderr, "[DRAIN] Output queue drained successfully\n")
 	return nil
 }
 
