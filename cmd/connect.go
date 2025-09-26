@@ -309,20 +309,6 @@ func (m *connectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Update CTS status in status bar
 		m.statusBar.UpdateCTSStatus(msg.Status)
 
-		// Add CTS status change to terminal with timestamp
-		if m.IsReady() {
-			statusText := "CTS: OFF"
-			if msg.Status {
-				statusText = "CTS: ON"
-			}
-			ctsData := components.DataReceivedMsg{
-				Timestamp: msg.Timestamp,
-				Data:      []byte(statusText),
-				IsTX:      false,
-			}
-			m.terminal.AddMessage(ctsData)
-		}
-
 	case components.DataReceivedMsg:
 		// Safely handle the data message
 		defer func() {
