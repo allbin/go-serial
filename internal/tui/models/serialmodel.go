@@ -42,6 +42,7 @@ type SerialModel struct {
 	rawData   []components.DataReceivedMsg
 	err       error
 	ready     bool
+	sequence  int64 // Counter for message sequence numbers
 
 	// Input mode (vim-like)
 	inputMode InputMode
@@ -113,11 +114,33 @@ func (m *SerialModel) GetRawData() []components.DataReceivedMsg {
 }
 
 func (m *SerialModel) AddRawData(msg components.DataReceivedMsg) {
+	// Assign sequence number if not already set
+	if msg.Sequence == 0 {
+		m.sequence++
+		msg.Sequence = m.sequence
+	}
 	m.rawData = append(m.rawData, msg)
+}
+
+func (m *SerialModel) UpdateMessage(msg components.DataReceivedMsg) bool {
+	// Find and replace message with matching sequence number
+	for i, existing := range m.rawData {
+		if existing.Sequence == msg.Sequence {
+			m.rawData[i] = msg
+			return true
+		}
+	}
+	return false
+}
+
+func (m *SerialModel) GetNextSequence() int64 {
+	m.sequence++
+	return m.sequence
 }
 
 func (m *SerialModel) ClearData() {
 	m.rawData = make([]components.DataReceivedMsg, 0)
+	m.sequence = 0
 }
 
 func (m *SerialModel) GetFormattedData() []string {

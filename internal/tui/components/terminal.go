@@ -46,6 +46,14 @@ func (t *Terminal) AddMessage(msg DataReceivedMsg) {
 	}
 }
 
+func (t *Terminal) UpdateMessage(rawData []DataReceivedMsg) {
+	// Refresh the entire display with updated raw data
+	// This ensures proper ordering and formatting
+	t.data = t.formatter.FormatMessages(rawData)
+	t.viewport.SetContent(strings.Join(t.data, "\n"))
+	t.viewport.GotoBottom()
+}
+
 func (t *Terminal) AddFormattedMessage(msg string) {
 	t.data = append(t.data, msg)
 	t.viewport.SetContent(strings.Join(t.data, "\n"))

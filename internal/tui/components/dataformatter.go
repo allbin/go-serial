@@ -14,6 +14,7 @@ type DataReceivedMsg struct {
 	Data      []byte
 	IsTX      bool
 	Status    string // For TX messages: "PENDING", "WRITTEN", "ERROR", empty for RX
+	Sequence  int64  // Unique sequence number for updating messages in place
 }
 
 type DisplayMode struct {
@@ -56,16 +57,13 @@ func (df *DataFormatter) FormatMessage(msg DataReceivedMsg) string {
 		switch msg.Status {
 		case "PENDING":
 			txColor = colors.Yellow
-			statusText = "TX ○"
-		case "TRANSMITTING":
-			txColor = colors.Blue
-			statusText = "TX ⏸" // Pause symbol for blocked/transmitting
+			statusText = "TX"
 		case "WRITTEN":
 			txColor = colors.Green
-			statusText = "TX ✓"
+			statusText = "TX"
 		case "ERROR":
 			txColor = colors.Red
-			statusText = "TX ✗"
+			statusText = "TX"
 		default:
 			txColor = colors.Peach
 			statusText = "TX"

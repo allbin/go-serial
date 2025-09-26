@@ -320,8 +320,17 @@ func (m *connectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Only process data if we're ready (WindowSizeMsg has been received)
 		if m.IsReady() {
-			m.AddRawData(msg)
-			m.terminal.AddMessage(msg)
+			// If this is a TX completion status (WRITTEN or ERROR), update existing message
+			if msg.IsTX && (msg.Status == "WRITTEN" || msg.Status == "ERROR") && msg.Sequence > 0 {
+				if m.UpdateMessage(msg) {
+					// Message was updated, refresh terminal display
+					m.terminal.UpdateMessage(m.GetRawData())
+				}
+			} else {
+				// New message (including PENDING TX), add normally
+				m.AddRawData(msg)
+				m.terminal.AddMessage(msg)
+			}
 		}
 
 	case tea.KeyMsg:
@@ -365,39 +374,28 @@ func (m *connectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 					// Send the data with proper timeout handling and status updates
 					writeStatusCh := make(chan error, 1)
-					transmittingStatusCh := make(chan bool, 1)
 
 					go func(port *serial.Port, dataToSend []byte) {
 						ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 						defer cancel()
-
-						// Signal that we're about to start writing (may block on CTS)
-						transmittingStatusCh <- true
 
 						_, err := port.WriteContext(ctx, dataToSend)
 						writeStatusCh <- err
 						close(writeStatusCh)
 					}(port, dataToSend)
 
-					// Return commands for both status updates
-					cmds = append(cmds, func() tea.Msg {
-						// Wait for write to start - show TRANSMITTING status
-						<-transmittingStatusCh
-						return components.DataReceivedMsg{
-							Timestamp: time.Now(),
-							Data:      displayData,
-							IsTX:      true,
-							Status:    "TRANSMITTING",
-						}
-					})
+					// Get sequence number for this TX message
+					sequence := m.GetNextSequence()
 
+					// Return single command for final status update
 					cmds = append(cmds, func() tea.Msg {
 						err := <-writeStatusCh
-						// Send completion status
+						// Send completion status with same sequence number
 						finalStatus := components.DataReceivedMsg{
 							Timestamp: time.Now(),
 							Data:      displayData,
 							IsTX:      true,
+							Sequence:  sequence,
 						}
 						if err != nil {
 							finalStatus.Status = "ERROR"
@@ -414,6 +412,7 @@ func (m *connectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						Data:      displayData,
 						IsTX:      true,
 						Status:    "PENDING",
+						Sequence:  sequence,
 					}
 					// Add to both raw data store and terminal display
 					m.AddRawData(txData)
