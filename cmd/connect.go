@@ -11,15 +11,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/allbin/serial"
+	"github.com/allbin/serial/internal/tui/components"
+	"github.com/allbin/serial/internal/tui/keys"
+	"github.com/allbin/serial/internal/tui/models"
+	"github.com/allbin/serial/internal/tui/styles"
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/mdjarv/serial"
-	"github.com/mdjarv/serial/internal/tui/components"
-	"github.com/mdjarv/serial/internal/tui/keys"
-	"github.com/mdjarv/serial/internal/tui/models"
-	"github.com/mdjarv/serial/internal/tui/styles"
 	"github.com/spf13/cobra"
 )
 

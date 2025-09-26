@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/allbin/serial"
+	"github.com/allbin/serial/internal/tui/colors"
+	"github.com/allbin/serial/internal/tui/styles"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/mdjarv/serial"
-	"github.com/mdjarv/serial/internal/tui/colors"
-	"github.com/mdjarv/serial/internal/tui/styles"
 )
 
 // CTSStatusMsg represents a CTS status change

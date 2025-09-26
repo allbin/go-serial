@@ -4,8 +4,8 @@ import (
 	"context"
 	"sync"
 
-	"github.com/mdjarv/serial"
-	"github.com/mdjarv/serial/internal/tui/components"
+	"github.com/allbin/serial"
+	"github.com/allbin/serial/internal/tui/components"
 )
 
 // InputMode represents the current input mode (vim-like)

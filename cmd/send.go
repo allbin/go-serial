@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/allbin/serial"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/mdjarv/serial"
 	"github.com/spf13/cobra"
 )
 

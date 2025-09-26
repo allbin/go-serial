@@ -17,6 +17,7 @@ Existing Go serial libraries lack robust support for hardware flow control, part
 ## API Design
 
 ### Functional Options Pattern
+
 Clean, discoverable API using functional options with sensible defaults:
 
 ```go
@@ -25,7 +26,7 @@ package main
 import (
     "context"
     "time"
-    "github.com/mdjarv/serial"
+    "github.com/allbin/serial"
 )
 
 func main() {
@@ -65,6 +66,7 @@ func main() {
 ```
 
 ### Port Discovery
+
 ```go
 // List available serial ports (ttyUSB*, ttyACM*, ttyS*, ttyAMA*)
 ports, err := serial.ListPorts()
@@ -77,6 +79,7 @@ for _, port := range ports {
 ```
 
 ### Available Options
+
 ```go
 // Configuration options
 serial.WithBaudRate(115200)
@@ -90,6 +93,7 @@ serial.WithWriteBufferSize(4096)
 ```
 
 ### Default Configuration
+
 - **BaudRate**: 115200
 - **DataBits**: 8
 - **StopBits**: 1
@@ -99,6 +103,7 @@ serial.WithWriteBufferSize(4096)
 - **BufferSizes**: 4096 bytes
 
 ### Error Handling
+
 Specific error types for robust error handling with `errors.Is()`:
 
 ```go
@@ -120,12 +125,14 @@ if err := port.Write(data); errors.Is(err, serial.ErrCTSTimeout) {
 ## Architecture Principles
 
 ### Developer Experience Focus
+
 - **Transparent flow control**: `Write()` method handles all flow control logic internally
 - **Blocking semantics**: Simple, predictable behavior - blocks until operation completes
 - **Configuration-driven**: Behavior controlled through config, not API complexity
 - **Standard interfaces**: Implements `io.ReadWriteCloser` for compatibility
 
 ### Implementation Strategy
+
 - **Linux termios**: Direct system calls for precise control
 - **TIOCM support**: Use modem control signals for CTS monitoring
 - **Interrupt-driven**: React to CTS changes without polling where possible
@@ -134,6 +141,7 @@ if err := port.Write(data); errors.Is(err, serial.ErrCTSTimeout) {
 ## Implementation Status
 
 ### Completed Features
+
 - [x] **API Design**: Functional options pattern with sensible defaults
 - [x] **Architecture Planning**: Context-based I/O, flow control strategy
 - [x] **Documentation**: Comprehensive API examples and usage patterns
@@ -151,6 +159,7 @@ if err := port.Write(data); errors.Is(err, serial.ErrCTSTimeout) {
 All core serial communication functionality has been implemented and tested successfully!
 
 **Completed Implementation:**
+
 - [x] **Port Opening & Configuration** (100% complete)
   - [x] Linux termios integration foundation
   - [x] Baud rate, data bits, stop bits, parity configuration logic
@@ -180,6 +189,7 @@ All core serial communication functionality has been implemented and tested succ
 **🎉 MAJOR BREAKTHROUGH - Neocortec Communication Working!**
 
 **Today's Success:**
+
 - ✅ **Neocortec NeoMesh modules now communicate successfully** with proper message delivery
 - ✅ **Kernel CRTSCTS flow control proven effective** for microsecond CTS timing windows (1ms)
 - ✅ **O_SYNC synchronous writes implemented** with configurable modes
@@ -189,12 +199,14 @@ All core serial communication functionality has been implemented and tested succ
 **REMAINING ISSUES TO FIX:**
 
 ### 1. TX Status Display Order (Cosmetic)
+
 **Issue:** Status messages appear out of sequence: `TX ○ → TX ✓ → TX ⏸` instead of `TX ○ → TX ⏸ → TX ✓`
 **Impact:** Confusing visual feedback, though functionality works correctly
 **Location:** `cmd/connect.go:393-419` - Bubble Tea command ordering
 **Solution:** Fix command sequencing to show TRANSMITTING before WRITTEN status
 
 ### 2. Write Completion Debug Missing
+
 **Issue:** `[KERNEL_WRITE]` debug messages never appear even though writes succeed
 **Impact:** Debugging incomplete - can't see actual kernel write timing
 **Location:** `port.go:578-586` - WriteContext goroutine
@@ -202,20 +214,25 @@ All core serial communication functionality has been implemented and tested succ
 **Investigation Needed:** Determine if this is expected O_SYNC behavior or a bug
 
 ### 3. Flow Control Redundancy Analysis
+
 **Issue:** Userspace CTS checking may be redundant with kernel CRTSCTS
 **Impact:** Potential performance overhead and complexity
 **Current State:** Bypassed userspace flow control, kernel handles everything
 **Decision Needed:** Remove userspace CTS logic entirely or keep for non-CRTSCTS modes
 
 ### 4. Enhanced CLI Features
+
 **Needed:**
+
 - `--sync-writes` flag is working but needs documentation
 - Real-time CTS timing statistics and analysis
 - Message protocol helpers for Neocortec format validation
 - Export/import of communication logs
 
 ### 5. Success Configuration Documentation
+
 **Working Neocortec Setup:**
+
 ```bash
 # Command that works for Neocortec NeoMesh communication:
 go run cmd/serial/main.go connect /dev/ttyUSB2 -f cts -t 5000 --sync-writes
@@ -232,6 +249,7 @@ go run cmd/serial/main.go connect /dev/ttyUSB2 -f cts -t 5000 --sync-writes
 ```
 
 **Key Insights Learned:**
+
 - **Kernel CRTSCTS is sufficient** - userspace CTS checking was redundant and too slow
 - **CTS timing windows are 1ms** - kernel handles this perfectly with hardware flow control
 - **O_SYNC provides guarantee** - ensures writes don't return until transmission
@@ -239,6 +257,7 @@ go run cmd/serial/main.go connect /dev/ttyUSB2 -f cts -t 5000 --sync-writes
 - **TUI provides excellent debugging** - real-time CTS monitoring reveals timing patterns
 
 **NEXT PRIORITIES:**
+
 1. **Fix TX status display ordering** (quick win)
 2. **Complete write timing debug** investigation
 3. **Add Neocortec protocol helpers** for message validation and checksum calculation
@@ -246,6 +265,7 @@ go run cmd/serial/main.go connect /dev/ttyUSB2 -f cts -t 5000 --sync-writes
 5. **Protocol documentation** - document Neocortec message format patterns
 
 #### Flow Control System - PARTIAL IMPLEMENTATION ⚠️
+
 - [x] **Hardware Flow Control** (basic implementation complete)
   - [x] `FlowControlNone` - Standard serial communication
   - [x] `FlowControlCTS` - CTS-aware transmission with configurable timeout
@@ -256,11 +276,13 @@ go run cmd/serial/main.go connect /dev/ttyUSB2 -f cts -t 5000 --sync-writes
   - [x] Context vs CTS timeout precedence (first timeout wins)
 
 **Flow Control Limitations & Future Work:**
+
 - Current CTS checking is polling-based (10μs intervals) - could be optimized with interrupt-driven approach
 - Need hardware testing to validate microsecond precision requirements
 - Mid-transmission CTS handling needs validation and documentation
 
 #### Port Discovery - COMPLETED ✅
+
 - [x] **Device Enumeration** (100% complete)
   - [x] `ListPorts()` function with comprehensive device filtering (list.go:13-82)
   - [x] Filter for communication-capable devices (`ttyUSB*`, `ttyACM*`, `ttyS*`, `ttyAMA*`, and more)
@@ -280,6 +302,7 @@ go run cmd/serial/main.go connect /dev/ttyUSB2 -f cts -t 5000 --sync-writes
 ### Research & Testing Phase
 
 #### Hardware Testing
+
 - [ ] **CTS Timing Validation**
   - [ ] Test with devices requiring microsecond CTS precision
   - [ ] Validate 480µs window handling capability
@@ -290,12 +313,14 @@ go run cmd/serial/main.go connect /dev/ttyUSB2 -f cts -t 5000 --sync-writes
   - [ ] Implement appropriate recovery strategies
 
 #### Platform Compatibility
+
 - [ ] **Linux Variants**
   - [ ] x86_64 desktop/server systems
   - [ ] ARM/Raspberry Pi GPIO serial (`ttyAMA*`, `ttyS0`)
   - [ ] USB serial adapter compatibility (`ttyUSB*`, `ttyACM*`)
 
 ### Future Enhancements
+
 - [ ] **Advanced Features**
   - [ ] Concurrent read/write patterns (research needed)
   - [ ] Custom baud rate support
@@ -309,6 +334,7 @@ go run cmd/serial/main.go connect /dev/ttyUSB2 -f cts -t 5000 --sync-writes
 ### CLI Tool
 
 #### Command-Line Interface
+
 A professional CLI tool using Cobra + Bubble Tea for both library testing and general serial communication:
 
 ```bash
@@ -330,6 +356,7 @@ serial test-cts /dev/ttyUSB0        # CTS timing validation and diagnostics
 ```
 
 #### Repository Structure
+
 **Library-first design** with clean import path and standard Go project layout:
 
 ```
@@ -350,12 +377,14 @@ serial/
 ```
 
 **Design Benefits:**
-- **Clean import path**: `github.com/mdjarv/serial` (no pkg/ subdirectory)
+
+- **Clean import path**: `github.com/allbin/serial` (no pkg/ subdirectory)
 - **Standard Go layout**: Library in root, CLI in `cmd/`
 - **No circular dependencies**: One-way dependency (CLI → Library)
 - **Professional structure**: Follows Go project best practices
 
 #### CLI Implementation Roadmap
+
 - [x] **Basic CLI Structure (Cobra)** - COMPLETED ✅
   - [x] Project initialization with `cobra-cli`
   - [x] `list` command with styled table output and filtering options
@@ -375,12 +404,13 @@ serial/
   - [ ] Scripting and automation support
 
 #### Installation & Distribution
+
 ```bash
 # Library installation
-go get github.com/mdjarv/serial
+go get github.com/allbin/serial
 
 # CLI tool installation
-go install github.com/mdjarv/serial/cmd/serial@latest
+go install github.com/allbin/serial/cmd/serial@latest
 
 # Usage (Development)
 go run ./cmd/serial list --table --filter usb
@@ -392,6 +422,7 @@ serial connect /dev/ttyUSB0 --baudrate=115200 --flow-control=cts
 ```
 
 ### Development Workflow
+
 - [ ] **Project Setup**
   - [x] Go module initialization
   - [x] Cobra CLI initialization with `cobra-cli init`
@@ -412,4 +443,5 @@ serial connect /dev/ttyUSB0 --baudrate=115200 --flow-control=cts
 
 ---
 
-*This library is designed for applications requiring reliable hardware flow control while maintaining a simple, idiomatic Go API.*
+_This library is designed for applications requiring reliable hardware flow control while maintaining a simple, idiomatic Go API._
+

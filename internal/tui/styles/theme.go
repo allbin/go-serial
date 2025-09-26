@@ -1,8 +1,8 @@
 package styles
 
 import (
+	"github.com/allbin/serial/internal/tui/colors"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/mdjarv/serial/internal/tui/colors"
 )
 
 var (

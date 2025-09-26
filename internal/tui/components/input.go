@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/allbin/serial/internal/tui/colors"
+	"github.com/allbin/serial/internal/tui/styles"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/mdjarv/serial/internal/tui/colors"
-	"github.com/mdjarv/serial/internal/tui/styles"
 )
 
 type SendingMode int

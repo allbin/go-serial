@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Go package for serial communication (`github.com/mdjarv/serial`) using Go 1.25.1. The project emphasizes clean, DRY code following Go best practices and idiomatic patterns.
+This is a Go package for serial communication (`github.com/allbin/serial`) using Go 1.25.1. The project emphasizes clean, DRY code following Go best practices and idiomatic patterns.
 
 ## Development Commands
 
@@ -60,4 +60,3 @@ This is a Go package for serial communication (`github.com/mdjarv/serial`) using
 - **Update README.md when making progress** - If you complete features, fix issues, or make changes that affect the project status, update the README.md to reflect current state
 - **Track progress in README.md** - Use the implementation status sections to show what's completed, in progress, or planned for future
 - **Never use emojis** - Keep all markdown clean and readable without visual noise from emojis
-

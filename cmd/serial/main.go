@@ -1,6 +1,6 @@
 package main
 
-import "github.com/mdjarv/serial/cmd"
+import "github.com/allbin/serial/cmd"
 
 func main() {
 	cmd.Execute()
