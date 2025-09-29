@@ -4,8 +4,8 @@ import (
 	"context"
 	"sync"
 
-	"github.com/allbin/serial"
-	"github.com/allbin/serial/internal/tui/components"
+	"github.com/allbin/go-serial"
+	"github.com/allbin/go-serial/internal/tui/components"
 )
 
 // InputMode represents the current input mode (vim-like)

@@ -1,4 +1,4 @@
-module github.com/allbin/serial
+module github.com/allbin/go-serial
 
 go 1.25.1
 

@@ -1,6 +1,6 @@
 package main
 
-import "github.com/allbin/serial/cmd"
+import "github.com/allbin/go-serial/cmd"
 
 func main() {
 	cmd.Execute()

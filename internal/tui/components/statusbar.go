@@ -3,9 +3,9 @@ package components
 import (
 	"fmt"
 
-	"github.com/allbin/serial"
-	"github.com/allbin/serial/internal/tui/colors"
-	"github.com/allbin/serial/internal/tui/styles"
+	"github.com/allbin/go-serial"
+	"github.com/allbin/go-serial/internal/tui/colors"
+	"github.com/allbin/go-serial/internal/tui/styles"
 	"github.com/charmbracelet/lipgloss"
 )
 

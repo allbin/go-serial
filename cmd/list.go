@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/allbin/serial"
+	"github.com/allbin/go-serial"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 )

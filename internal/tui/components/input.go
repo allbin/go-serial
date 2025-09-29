@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/allbin/serial/internal/tui/colors"
-	"github.com/allbin/serial/internal/tui/styles"
+	"github.com/allbin/go-serial/internal/tui/colors"
+	"github.com/allbin/go-serial/internal/tui/styles"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
