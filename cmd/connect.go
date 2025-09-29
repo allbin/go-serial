@@ -349,7 +349,7 @@ func (m *connectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// Send the data with proper timeout handling and status updates
 					writeStatusCh := make(chan error, 1)
 
-					go func(port *serial.Port, dataToSend []byte) {
+					go func(port serial.Port, dataToSend []byte) {
 						ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 						defer cancel()
 

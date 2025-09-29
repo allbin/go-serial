@@ -170,7 +170,7 @@ func TestContextTimeout(t *testing.T) {
 	time.Sleep(10 * time.Microsecond)
 
 	// Create a mock port for testing context behavior
-	port := &Port{closed: false}
+	port := &port{closed: false}
 
 	// Test ReadContext with expired context
 	buf := make([]byte, 10)

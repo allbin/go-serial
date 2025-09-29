@@ -70,7 +70,7 @@ func NewTerminalTable(width, height int) *TerminalTable {
 func (tt *TerminalTable) SetSize(width, height int) {
 	// Update columns first, then table dimensions
 	tt.updateColumnsForDisplayMode(width)
-	tt.table = tt.table.WithTargetWidth(width).WithMaxTotalWidth(width).WithMinimumHeight(height).WithPageSize(height-2) // Reserve space for header
+	tt.table = tt.table.WithTargetWidth(width).WithMaxTotalWidth(width).WithMinimumHeight(height).WithPageSize(height - 2) // Reserve space for header
 }
 
 func (tt *TerminalTable) updateColumnsForDisplayMode(width int) {

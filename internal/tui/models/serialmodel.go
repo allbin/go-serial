@@ -34,7 +34,7 @@ type ConnectionStatusMsg struct {
 
 type SerialModel struct {
 	// Serial connection
-	port     *serial.Port
+	port     serial.Port
 	portPath string
 
 	// State
@@ -69,13 +69,13 @@ func NewSerialModel(portPath string) *SerialModel {
 	}
 }
 
-func (m *SerialModel) GetPort() *serial.Port {
+func (m *SerialModel) GetPort() serial.Port {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.port
 }
 
-func (m *SerialModel) SetPort(port *serial.Port) {
+func (m *SerialModel) SetPort(port serial.Port) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.port = port

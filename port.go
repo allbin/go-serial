@@ -9,14 +9,30 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Port represents a serial port connection
-type Port struct {
+// Port represents a serial port connection interface
+type Port interface {
+	Close() error
+	Read(buf []byte) (int, error)
+	Write(data []byte) (int, error)
+	WriteContext(ctx context.Context, data []byte) (int, error)
+	ReadContext(ctx context.Context, buf []byte) (int, error)
+	GetCTSStatus() (bool, error)
+	Drain() error
+	FlushInput() error
+	FlushOutput() error
+}
+
+// port is the concrete implementation of the Port interface
+type port struct {
 	mu         sync.RWMutex
 	fd         int
 	config     Config
 	closed     bool
 	ctsMonitor *ctsMonitor // CTS monitoring for flow control
 }
+
+// Ensure port implements Port interface at compile time
+var _ Port = (*port)(nil)
 
 // FlowControl represents the flow control mode
 type FlowControl int
@@ -202,7 +218,7 @@ func (c *ctsMonitor) waitForCTS(timeout time.Duration) error {
 }
 
 // Open opens a serial port with the given device path and options
-func Open(device string, opts ...Option) (*Port, error) {
+func Open(device string, opts ...Option) (Port, error) {
 	// Apply default configuration
 	config := DefaultConfig()
 	for _, opt := range opts {
@@ -228,7 +244,7 @@ func Open(device string, opts ...Option) (*Port, error) {
 		return nil, err
 	}
 
-	port := &Port{
+	p := &port{
 		fd:     fd,
 		config: config,
 		closed: false,
@@ -236,11 +252,11 @@ func Open(device string, opts ...Option) (*Port, error) {
 
 	// Set up CTS monitoring if flow control is enabled
 	if config.FlowControl == FlowControlCTS {
-		port.ctsMonitor = newCTSMonitor(fd)
-		port.ctsMonitor.start()
+		p.ctsMonitor = newCTSMonitor(fd)
+		p.ctsMonitor.start()
 	}
 
-	return port, nil
+	return p, nil
 }
 
 // configurePort configures the serial port using clean unix package calls
@@ -322,7 +338,7 @@ func configurePort(fd int, config Config) error {
 }
 
 // Close closes the serial port
-func (p *Port) Close() error {
+func (p *port) Close() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -341,7 +357,7 @@ func (p *Port) Close() error {
 }
 
 // Read reads data from the serial port
-func (p *Port) Read(buf []byte) (int, error) {
+func (p *port) Read(buf []byte) (int, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -353,7 +369,7 @@ func (p *Port) Read(buf []byte) (int, error) {
 }
 
 // Write writes data to the serial port
-func (p *Port) Write(data []byte) (int, error) {
+func (p *port) Write(data []byte) (int, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -373,7 +389,7 @@ func (p *Port) Write(data []byte) (int, error) {
 }
 
 // WriteContext writes data with context timeout support
-func (p *Port) WriteContext(ctx context.Context, data []byte) (int, error) {
+func (p *port) WriteContext(ctx context.Context, data []byte) (int, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -427,7 +443,7 @@ func (p *Port) WriteContext(ctx context.Context, data []byte) (int, error) {
 }
 
 // ReadContext reads data with context timeout support
-func (p *Port) ReadContext(ctx context.Context, buf []byte) (int, error) {
+func (p *port) ReadContext(ctx context.Context, buf []byte) (int, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -465,7 +481,7 @@ func (p *Port) ReadContext(ctx context.Context, buf []byte) (int, error) {
 }
 
 // GetCTSStatus returns the current CTS status
-func (p *Port) GetCTSStatus() (bool, error) {
+func (p *port) GetCTSStatus() (bool, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -482,7 +498,7 @@ func (p *Port) GetCTSStatus() (bool, error) {
 }
 
 // Drain waits until all output written to the port has been transmitted
-func (p *Port) Drain() error {
+func (p *port) Drain() error {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -494,7 +510,7 @@ func (p *Port) Drain() error {
 }
 
 // FlushInput discards any unread input data
-func (p *Port) FlushInput() error {
+func (p *port) FlushInput() error {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -506,7 +522,7 @@ func (p *Port) FlushInput() error {
 }
 
 // FlushOutput discards any unwritten output data
-func (p *Port) FlushOutput() error {
+func (p *port) FlushOutput() error {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
