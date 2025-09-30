@@ -114,8 +114,10 @@ func renderTable(ports []string) {
 	fmt.Printf("Found %d serial port(s):\n\n", len(ports))
 
 	// Define column widths
-	portWidth := 15
-	typeWidth := 20
+	portWidth := 12
+	typeWidth := 15
+	serialWidth := 12
+	ifWidth := 4
 	descWidth := 30
 
 	// Create styles
@@ -130,9 +132,11 @@ func renderTable(ports []string) {
 		PaddingRight(2)
 
 	// Print header
-	header := fmt.Sprintf("%-*s %-*s %-*s",
+	header := fmt.Sprintf("%-*s %-*s %-*s %-*s %-*s",
 		portWidth, "Port",
 		typeWidth, "Type",
+		serialWidth, "Serial",
+		ifWidth, "IF",
 		descWidth, "Description")
 	fmt.Println(headerStyle.Render(header))
 
@@ -140,18 +144,31 @@ func renderTable(ports []string) {
 	for _, port := range ports {
 		info, err := serial.GetPortInfo(port)
 		if err != nil {
-			row := fmt.Sprintf("%-*s %-*s %-*s",
+			row := fmt.Sprintf("%-*s %-*s %-*s %-*s %-*s",
 				portWidth, port,
 				typeWidth, "Unknown",
+				serialWidth, "-",
+				ifWidth, "-",
 				descWidth, fmt.Sprintf("Error: %v", err))
 			fmt.Println(cellStyle.Render(row))
 			continue
 		}
 
 		portType := getPortType(info.Name)
-		row := fmt.Sprintf("%-*s %-*s %-*s",
+		serialNum := info.SerialNumber
+		if serialNum == "" {
+			serialNum = "-"
+		}
+		ifNum := info.InterfaceNumber
+		if ifNum == "" {
+			ifNum = "-"
+		}
+
+		row := fmt.Sprintf("%-*s %-*s %-*s %-*s %-*s",
 			portWidth, info.Name,
 			typeWidth, portType,
+			serialWidth, serialNum,
+			ifWidth, ifNum,
 			descWidth, info.Description)
 		fmt.Println(cellStyle.Render(row))
 	}

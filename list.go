@@ -95,12 +95,21 @@ func isCharacterDevice(path string) bool {
 
 // GetPortInfo returns detailed information about a serial port
 type PortInfo struct {
-	Name         string
-	Path         string
-	Description  string
-	VendorID     string
-	ProductID    string
-	SerialNumber string
+	Name        string // Device name (e.g., "ttyACM0")
+	Path        string // Full device path (e.g., "/dev/ttyACM0")
+	Description string // Human-readable description
+
+	// USB Device Information (Linux-specific, empty on other platforms)
+	VendorID        string // USB Vendor ID (hex, e.g., "1a86")
+	ProductID       string // USB Product ID (hex, e.g., "55d2")
+	SerialNumber    string // USB Serial Number (e.g., "5481031032")
+	InterfaceNumber string // USB Interface Number (hex, e.g., "02")
+	BusNumber       string // USB Bus Number (decimal, e.g., "001")
+	DeviceNumber    string // USB Device Number (decimal, e.g., "003")
+
+	// Additional metadata
+	Manufacturer string // USB Manufacturer string (if available)
+	Product      string // USB Product string (if available)
 }
 
 // GetPortInfo returns detailed information about a specific port
@@ -152,15 +161,45 @@ func getPortDescription(name string) string {
 }
 
 // enrichUSBInfo attempts to get USB device information from sysfs
+// This function is Linux-specific and gracefully handles missing/inaccessible files
 func enrichUSBInfo(info *PortInfo) {
-	// This is a simplified version - full implementation would read from
-	// /sys/class/tty/{device}/device/... to get USB vendor/product info
-	// For now, we'll leave these fields empty as they require more complex
-	// sysfs parsing which can vary between systems
+	// Construct sysfs path for this device
+	// /sys/class/tty/{device}/device/ is a symlink that resolves to the tty subdirectory
+	devicePath := filepath.Join("/sys/class/tty", info.Name, "device")
 
-	// TODO: Implement full USB device info parsing from sysfs
-	// This would involve:
-	// 1. Following symlinks in /sys/class/tty/{device}/
-	// 2. Reading idVendor, idProduct, serial files
-	// 3. Looking up vendor/product names from USB ID database
+	// Resolve the symlink to get the actual device path
+	// This typically resolves to: .../5-2.3.1:1.0/ttyUSB0
+	resolvedPath, err := filepath.EvalSymlinks(devicePath)
+	if err != nil {
+		return // Can't resolve symlink, gracefully fail
+	}
+
+	// Go up one level to get to the interface directory (.../5-2.3.1:1.0)
+	interfacePath := filepath.Dir(resolvedPath)
+
+	// Read interface-level properties
+	info.InterfaceNumber = readSysfsFile(filepath.Join(interfacePath, "bInterfaceNumber"))
+
+	// Go up one more level to get to the USB device directory (.../5-2.3.1)
+	usbDevicePath := filepath.Dir(interfacePath)
+
+	info.VendorID = readSysfsFile(filepath.Join(usbDevicePath, "idVendor"))
+	info.ProductID = readSysfsFile(filepath.Join(usbDevicePath, "idProduct"))
+	info.SerialNumber = readSysfsFile(filepath.Join(usbDevicePath, "serial"))
+	info.Manufacturer = readSysfsFile(filepath.Join(usbDevicePath, "manufacturer"))
+	info.Product = readSysfsFile(filepath.Join(usbDevicePath, "product"))
+
+	// Read bus and device numbers for USB reset
+	info.BusNumber = readSysfsFile(filepath.Join(usbDevicePath, "busnum"))
+	info.DeviceNumber = readSysfsFile(filepath.Join(usbDevicePath, "devnum"))
+}
+
+// readSysfsFile reads a single-line sysfs file and returns trimmed content
+// Returns empty string on any error (graceful degradation)
+func readSysfsFile(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "" // File doesn't exist or no permission
+	}
+	return strings.TrimSpace(string(data))
 }
