@@ -13,4 +13,8 @@ var (
 	ErrPortClosed       = errors.New("serial port is closed")
 	ErrWriteTimeout     = errors.New("write operation timed out")
 	ErrReadTimeout      = errors.New("read operation timed out")
+
+	// USB-related errors
+	ErrUSBInfoNotAvailable  = errors.New("USB device information not available")
+	ErrUSBResetNotAvailable = errors.New("usbreset utility not available")
 )
