@@ -26,7 +26,7 @@ package main
 import (
     "context"
     "time"
-    "github.com/allbin/serial"
+    "github.com/allbin/go-serial"
 )
 
 func main() {
@@ -411,10 +411,10 @@ serial/
 
 ```bash
 # Library installation
-go get github.com/allbin/serial
+go get github.com/allbin/go-serial
 
 # CLI tool installation
-go install github.com/allbin/serial/cmd/serial@latest
+go install github.com/allbin/go-serial/cmd/serial@latest
 
 # Development usage
 go run ./cmd/serial list --table --filter usb
