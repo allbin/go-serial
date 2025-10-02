@@ -14,6 +14,10 @@ var (
 	ErrWriteTimeout     = errors.New("write operation timed out")
 	ErrReadTimeout      = errors.New("read operation timed out")
 
+	// Signal monitoring errors
+	ErrSignalTimeout     = errors.New("timeout waiting for signal change")
+	ErrInvalidSignalMask = errors.New("invalid signal mask")
+
 	// USB-related errors
 	ErrUSBInfoNotAvailable  = errors.New("USB device information not available")
 	ErrUSBResetNotAvailable = errors.New("usbreset utility not available")

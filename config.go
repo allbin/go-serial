@@ -20,6 +20,8 @@ type Config struct {
 	CTSTimeout        time.Duration
 	ReadTimeoutTenths int       // VTIME setting in tenths of seconds (0-255)
 	WriteMode         WriteMode // Controls write synchronization behavior
+	InitialRTS        *bool     // Initial RTS state (nil = hardware default)
+	InitialDTR        *bool     // Initial DTR state (nil = hardware default)
 }
 
 // Option is a functional option for configuring a serial port
@@ -122,6 +124,22 @@ func WithWriteMode(mode WriteMode) Option {
 func WithSyncWrite() Option {
 	return func(c *Config) error {
 		c.WriteMode = WriteModeSynced
+		return nil
+	}
+}
+
+// WithInitialRTS sets initial RTS state when opening port
+func WithInitialRTS(state bool) Option {
+	return func(c *Config) error {
+		c.InitialRTS = &state
+		return nil
+	}
+}
+
+// WithInitialDTR sets initial DTR state when opening port
+func WithInitialDTR(state bool) Option {
+	return func(c *Config) error {
+		c.InitialDTR = &state
 		return nil
 	}
 }

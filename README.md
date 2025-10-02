@@ -78,6 +78,154 @@ for _, port := range ports {
 }
 ```
 
+### USB Device Metadata (Linux)
+
+Get detailed USB device information including vendor/product IDs, serial numbers, and interface details:
+
+```go
+// Get USB metadata for a specific port
+info, err := serial.GetPortInfo("/dev/ttyUSB0")
+if err != nil {
+    panic(err)
+}
+
+fmt.Printf("Port: %s\n", info.Path)
+fmt.Printf("  Vendor: %s Product: %s\n", info.VendorID, info.ProductID)
+fmt.Printf("  Serial: %s Interface: %s\n", info.SerialNumber, info.InterfaceNumber)
+fmt.Printf("  Manufacturer: %s\n", info.Manufacturer)
+fmt.Printf("  Product: %s\n", info.Product)
+
+// Iterate through all ports with metadata
+ports, _ := serial.ListPorts()
+for _, portPath := range ports {
+    info, _ := serial.GetPortInfo(portPath)
+    if info.SerialNumber != "" {
+        fmt.Printf("%s: %s (Serial: %s)\n",
+            info.Name, info.Description, info.SerialNumber)
+    }
+}
+```
+
+**Application-level device detection example:**
+
+```go
+// Find a specific device by USB metadata
+func findDeviceByVendorAndProduct(vendorID, productID string) (string, error) {
+    ports, _ := serial.ListPorts()
+    for _, portPath := range ports {
+        info, _ := serial.GetPortInfo(portPath)
+
+        // Match by vendor and product ID
+        if info.VendorID == vendorID && info.ProductID == productID {
+            return portPath, nil
+        }
+    }
+    return "", errors.New("device not found")
+}
+
+// Find a device by serial number pattern
+func findDeviceBySerialPattern(prefix, suffix string) (string, error) {
+    ports, _ := serial.ListPorts()
+    for _, portPath := range ports {
+        info, _ := serial.GetPortInfo(portPath)
+
+        // Match by serial number pattern
+        if strings.HasPrefix(info.SerialNumber, prefix) &&
+           strings.HasSuffix(info.SerialNumber, suffix) {
+            return portPath, nil
+        }
+    }
+    return "", errors.New("device not found")
+}
+```
+
+### USB Device Reset (Linux)
+
+Programmatically reset USB devices to recover from hardware hangs:
+
+```go
+// Reset by port path
+err := serial.ResetUSBDevice("/dev/ttyUSB0")
+if err == serial.ErrUSBResetNotAvailable {
+    log.Println("Install usbutils: sudo apt-get install usbutils")
+}
+
+// Reset by serial number (survives device re-enumeration)
+err = serial.ResetUSBDeviceBySerial("FT123456")
+if err != nil {
+    log.Printf("Reset failed: %v", err)
+}
+
+// Check if reset is available before attempting
+if serial.IsUSBResetAvailable() {
+    err := serial.ResetUSBDevice("/dev/ttyUSB0")
+    // handle error
+}
+```
+
+**Requirements:**
+- `usbreset` utility from `usbutils` package
+- Root/sudo permissions for USB operations
+
+**Note:** USB devices re-enumerate after reset, potentially changing their ttyUSB number. Use serial numbers for reliable device identification after reset.
+
+### Modem Signal Control and Monitoring
+
+Access and control modem control signals (RTS, DTR, CTS, DSR, RI, DCD) for hardware flow control and device signaling:
+
+```go
+// Read all modem signal states
+signals, err := port.GetModemSignals()
+if err != nil {
+    panic(err)
+}
+
+fmt.Printf("CTS: %v, DSR: %v, DCD: %v, RI: %v\n",
+    signals.CTS, signals.DSR, signals.DCD, signals.RI)
+
+// Manual RTS control for software flow control
+err = port.SetRTS(false)  // Signal not ready
+// Process buffer
+err = port.SetRTS(true)   // Signal ready
+
+// Check RTS state
+rtsHigh, err := port.GetRTS()
+
+// Wait for signal changes (event-driven monitoring)
+signals, changed, err := port.WaitForSignalChange(
+    serial.SignalDSR | serial.SignalDCD,
+    5*time.Second,
+)
+if err == serial.ErrSignalTimeout {
+    // No signal change within timeout
+}
+if changed&serial.SignalDCD != 0 && !signals.DCD {
+    // Active-low wake signal detected
+}
+
+// Context-aware signal monitoring
+ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+defer cancel()
+
+signals, changed, err = port.WaitForSignalChangeContext(ctx, serial.SignalDSR)
+```
+
+**Initial signal configuration:**
+
+```go
+// Set initial RTS/DTR states when opening port
+port, err := serial.Open("/dev/ttyUSB0",
+    serial.WithInitialRTS(true),   // Start with RTS asserted
+    serial.WithInitialDTR(true),   // Start with DTR asserted
+)
+```
+
+**Use cases:**
+- Wake-up signals (active-low DSR/DCD patterns)
+- Device ready indicators (DSR)
+- External event triggers (RI - Ring Indicator)
+- Software flow control (manual RTS control)
+
 ### Available Options
 
 ```go
@@ -91,6 +239,8 @@ serial.WithCTSTimeout(500*time.Millisecond)
 serial.WithReadTimeout(25)          // VTIME in tenths of seconds (0-255)
 serial.WithWriteMode(serial.WriteModeSynced) // Buffered, Synced
 serial.WithSyncWrite()              // Shorthand for synced writes
+serial.WithInitialRTS(true)         // Set initial RTS state
+serial.WithInitialDTR(true)         // Set initial DTR state
 ```
 
 ### Default Configuration
@@ -110,17 +260,34 @@ Specific error types for robust error handling with `errors.Is()`:
 
 ```go
 var (
-    ErrCTSTimeout        = errors.New("CTS timeout waiting for clear to send")
-    ErrInvalidBaudRate   = errors.New("invalid baud rate")
-    ErrInvalidConfig     = errors.New("invalid serial configuration")
-    ErrPortClosed        = errors.New("serial port is closed")
+    ErrCTSTimeout           = errors.New("CTS timeout waiting for clear to send")
+    ErrInvalidBaudRate      = errors.New("invalid baud rate")
+    ErrInvalidConfig        = errors.New("invalid serial configuration")
+    ErrPortClosed           = errors.New("serial port is closed")
+    ErrSignalTimeout        = errors.New("timeout waiting for signal change")
+    ErrInvalidSignalMask    = errors.New("invalid signal mask")
+    ErrUSBInfoNotAvailable  = errors.New("USB device information not available")
+    ErrUSBResetNotAvailable = errors.New("usbreset utility not available")
 )
 
 // Usage
 if err := port.Write(data); errors.Is(err, serial.ErrCTSTimeout) {
     // Handle CTS timeout specifically
 }
+if errors.Is(err, serial.ErrSignalTimeout) {
+    // Handle signal monitoring timeout
+}
 ```
+
+### Platform Support
+
+**Core Serial Communication:** Works on all Linux systems (x86_64, ARM, Raspberry Pi)
+
+**USB Features (Linux-only):**
+- USB device metadata extraction relies on Linux sysfs (`/sys/class/tty/`)
+- USB device reset requires `usbreset` utility from `usbutils` package
+- On non-Linux platforms, USB metadata fields return empty strings
+- USB reset functions return `ErrUSBInfoNotAvailable` on non-Linux systems
 
 ## Architecture Principles
 
@@ -147,14 +314,19 @@ if err := port.Write(data); errors.Is(err, serial.ErrCTSTimeout) {
 - [x] **Flow Control**: Hardware CTS/RTS support with configurable timeouts
 - [x] **Configuration System**: Functional options pattern with comprehensive validation
 - [x] **Port Discovery**: Automatic detection and filtering of communication devices
+- [x] **USB Device Metadata**: Extract vendor/product IDs, serial numbers, interface details (Linux)
+- [x] **USB Device Reset**: Programmatic USB reset for hung devices (Linux)
+- [x] **Modem Signal Control**: Full modem signal monitoring and control (CTS, DSR, RI, DCD, RTS, DTR)
 - [x] **Error Handling**: Proper error types with context-aware messaging
-- [x] **Testing**: Unit tests covering configuration, I/O operations, and edge cases
+- [x] **Testing**: Unit tests covering configuration, I/O operations, USB features, modem signals, and edge cases
 
 ### CLI Tool - COMPLETED ✅
 
 Professional command-line interface with interactive features:
 
-- [x] **Port Management**: `serial list` with filtering and table formatting
+- [x] **Port Management**: `serial list` with filtering and USB metadata in table view
+- [x] **USB Device Info**: `serial info` displays detailed USB device information
+- [x] **USB Device Reset**: `serial reset` for recovering hung USB devices
 - [x] **Data Communication**: `serial send` and `serial listen` for basic I/O
 - [x] **Interactive Terminal**: `serial connect` with real-time bidirectional communication
 - [x] **Flow Control Support**: Hardware CTS/RTS support with configurable timeouts
@@ -162,16 +334,22 @@ Professional command-line interface with interactive features:
 
 ### Future Enhancements
 
-- [ ] **Advanced Hardware Support**: Custom baud rates, break signals, additional modem control
-- [ ] **Performance Optimizations**: Zero-copy I/O, interrupt-driven CTS monitoring
+- [ ] **Advanced Hardware Support**: Custom baud rates, break signals
+- [ ] **Performance Optimizations**: Zero-copy I/O, interrupt-driven signal monitoring
 - [ ] **Platform Extensions**: Windows support, additional embedded platforms
+- [ ] **Additional Signal Features**: Line status monitoring (overrun, framing, parity errors)
 
 ## CLI Tool Usage
 
 ```bash
 # Port discovery and management
 serial list                           # List available ports
-serial list --table --filter usb     # Styled table with USB filtering
+serial list --table --filter usb     # Styled table with USB metadata
+serial info /dev/ttyUSB0             # Show detailed USB device info
+
+# USB device management
+sudo serial reset /dev/ttyUSB0       # Reset USB device by port
+sudo serial reset --serial FT123456  # Reset USB device by serial number
 
 # Data communication
 serial listen /dev/ttyUSB0           # Real-time data monitoring
@@ -191,8 +369,10 @@ serial connect /dev/ttyUSB0 --sync-writes --flow-control cts
 serial/
 ├── cmd/                     # CLI commands (Cobra)
 │   ├── connect.go           # Interactive terminal connection
+│   ├── info.go              # USB device information display
 │   ├── list.go              # Port discovery and listing
 │   ├── listen.go            # Real-time data monitoring
+│   ├── reset.go             # USB device reset
 │   ├── send.go              # Send data to port
 │   └── root.go              # CLI root configuration
 ├── cmd/serial/              # CLI application entry point
@@ -202,9 +382,11 @@ serial/
 ├── port.go                  # Core serial port implementation
 ├── config.go                # Configuration and functional options
 ├── errors.go                # Error types and definitions
-├── list.go                  # Port discovery functionality
+├── list.go                  # Port discovery and USB metadata
+├── usb_reset.go             # USB device reset functionality
 ├── port_test.go             # Unit tests
 ├── list_test.go             # Port discovery tests
+├── usb_test.go              # USB feature tests
 ├── go.mod
 └── README.md
 ```

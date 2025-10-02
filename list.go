@@ -168,19 +168,28 @@ func enrichUSBInfo(info *PortInfo) {
 	devicePath := filepath.Join("/sys/class/tty", info.Name, "device")
 
 	// Resolve the symlink to get the actual device path
-	// This typically resolves to: .../5-2.3.1:1.0/ttyUSB0
+	// This typically resolves to:
+	//   ttyUSB: .../5-2.3.1:1.0/ttyUSB0 (includes device name)
+	//   ttyACM: .../1-4:1.0 (interface level, no device subdir)
 	resolvedPath, err := filepath.EvalSymlinks(devicePath)
 	if err != nil {
 		return // Can't resolve symlink, gracefully fail
 	}
 
-	// Go up one level to get to the interface directory (.../5-2.3.1:1.0)
-	interfacePath := filepath.Dir(resolvedPath)
+	// Determine the interface path based on device type
+	var interfacePath string
+	if strings.HasSuffix(resolvedPath, info.Name) {
+		// ttyUSB-style: path includes device name, go up one level to interface
+		interfacePath = filepath.Dir(resolvedPath)
+	} else {
+		// ttyACM-style: already at interface level
+		interfacePath = resolvedPath
+	}
 
 	// Read interface-level properties
 	info.InterfaceNumber = readSysfsFile(filepath.Join(interfacePath, "bInterfaceNumber"))
 
-	// Go up one more level to get to the USB device directory (.../5-2.3.1)
+	// Go up one more level to get to the USB device directory (.../5-2.3.1 or .../1-4)
 	usbDevicePath := filepath.Dir(interfacePath)
 
 	info.VendorID = readSysfsFile(filepath.Join(usbDevicePath, "idVendor"))

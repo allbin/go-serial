@@ -20,6 +20,13 @@ type Port interface {
 	Drain() error
 	FlushInput() error
 	FlushOutput() error
+
+	// Modem signal control and monitoring
+	GetModemSignals() (ModemSignals, error)
+	SetRTS(state bool) error
+	GetRTS() (bool, error)
+	WaitForSignalChange(mask SignalMask, timeout time.Duration) (ModemSignals, SignalMask, error)
+	WaitForSignalChangeContext(ctx context.Context, mask SignalMask) (ModemSignals, SignalMask, error)
 }
 
 // port is the concrete implementation of the Port interface
@@ -52,6 +59,26 @@ const (
 	ParityEven
 	ParityMark
 	ParitySpace
+)
+
+// ModemSignals represents modem control signal states
+type ModemSignals struct {
+	CTS bool // Clear To Send
+	DSR bool // Data Set Ready
+	RI  bool // Ring Indicator
+	DCD bool // Data Carrier Detect
+	RTS bool // Request To Send
+	DTR bool // Data Terminal Ready
+}
+
+// SignalMask identifies which signals to monitor
+type SignalMask int
+
+const (
+	SignalCTS SignalMask = 1 << iota
+	SignalDSR
+	SignalRI
+	SignalDCD
 )
 
 // ctsMonitor handles CTS signal monitoring using TIOCMIWAIT
@@ -139,9 +166,61 @@ func assertRTS(fd int) error {
 	return unix.IoctlSetInt(fd, unix.TIOCMBIS, unix.TIOCM_RTS)
 }
 
+// setDTR sets DTR signal state
+func setDTR(fd int, state bool) error {
+	if state {
+		return unix.IoctlSetInt(fd, unix.TIOCMBIS, unix.TIOCM_DTR)
+	}
+	return unix.IoctlSetInt(fd, unix.TIOCMBIC, unix.TIOCM_DTR)
+}
+
+// setRTSSignal sets RTS signal state
+func setRTSSignal(fd int, state bool) error {
+	if state {
+		return unix.IoctlSetInt(fd, unix.TIOCMBIS, unix.TIOCM_RTS)
+	}
+	return unix.IoctlSetInt(fd, unix.TIOCMBIC, unix.TIOCM_RTS)
+}
+
 // waitForCTSChange waits for CTS signal changes using TIOCMIWAIT
 func waitForCTSChange(fd int) error {
 	return unix.IoctlSetInt(fd, unix.TIOCMIWAIT, unix.TIOCM_CTS)
+}
+
+// signalMaskToTIOCM converts SignalMask to unix TIOCM bits
+func signalMaskToTIOCM(mask SignalMask) int {
+	var bits int
+	if mask&SignalCTS != 0 {
+		bits |= unix.TIOCM_CTS
+	}
+	if mask&SignalDSR != 0 {
+		bits |= unix.TIOCM_DSR
+	}
+	if mask&SignalRI != 0 {
+		bits |= unix.TIOCM_RI
+	}
+	if mask&SignalDCD != 0 {
+		bits |= unix.TIOCM_CAR
+	}
+	return bits
+}
+
+// detectSignalChanges compares old and new signal states to determine what changed
+func detectSignalChanges(oldStatus, newStatus int) SignalMask {
+	var changed SignalMask
+	if (oldStatus&unix.TIOCM_CTS != 0) != (newStatus&unix.TIOCM_CTS != 0) {
+		changed |= SignalCTS
+	}
+	if (oldStatus&unix.TIOCM_DSR != 0) != (newStatus&unix.TIOCM_DSR != 0) {
+		changed |= SignalDSR
+	}
+	if (oldStatus&unix.TIOCM_RI != 0) != (newStatus&unix.TIOCM_RI != 0) {
+		changed |= SignalRI
+	}
+	if (oldStatus&unix.TIOCM_CAR != 0) != (newStatus&unix.TIOCM_CAR != 0) {
+		changed |= SignalDCD
+	}
+	return changed
 }
 
 // newCTSMonitor creates a new CTS monitor
@@ -242,6 +321,20 @@ func Open(device string, opts ...Option) (Port, error) {
 	if err := configurePort(fd, config); err != nil {
 		unix.Close(fd)
 		return nil, err
+	}
+
+	// Apply initial signal states if configured
+	if config.InitialRTS != nil {
+		if err := setRTSSignal(fd, *config.InitialRTS); err != nil {
+			unix.Close(fd)
+			return nil, fmt.Errorf("failed to set initial RTS: %v", err)
+		}
+	}
+	if config.InitialDTR != nil {
+		if err := setDTR(fd, *config.InitialDTR); err != nil {
+			unix.Close(fd)
+			return nil, fmt.Errorf("failed to set initial DTR: %v", err)
+		}
 	}
 
 	p := &port{
@@ -495,6 +588,215 @@ func (p *port) GetCTSStatus() (bool, error) {
 	}
 
 	return status&unix.TIOCM_CTS != 0, nil
+}
+
+// GetModemSignals returns current state of all modem control signals
+func (p *port) GetModemSignals() (ModemSignals, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	if p.closed {
+		return ModemSignals{}, ErrPortClosed
+	}
+
+	status, err := getModemStatus(p.fd)
+	if err != nil {
+		return ModemSignals{}, err
+	}
+
+	return ModemSignals{
+		CTS: status&unix.TIOCM_CTS != 0,
+		DSR: status&unix.TIOCM_DSR != 0,
+		RI:  status&unix.TIOCM_RI != 0,
+		DCD: status&unix.TIOCM_CAR != 0,
+		RTS: status&unix.TIOCM_RTS != 0,
+		DTR: status&unix.TIOCM_DTR != 0,
+	}, nil
+}
+
+// SetRTS manually sets the RTS signal state
+// When true, asserts RTS (signals readiness to receive)
+// When false, deasserts RTS (signals not ready)
+func (p *port) SetRTS(state bool) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.closed {
+		return ErrPortClosed
+	}
+
+	if state {
+		return unix.IoctlSetInt(p.fd, unix.TIOCMBIS, unix.TIOCM_RTS)
+	}
+	return unix.IoctlSetInt(p.fd, unix.TIOCMBIC, unix.TIOCM_RTS)
+}
+
+// GetRTS returns current RTS signal state
+func (p *port) GetRTS() (bool, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	if p.closed {
+		return false, ErrPortClosed
+	}
+
+	status, err := getModemStatus(p.fd)
+	if err != nil {
+		return false, err
+	}
+
+	return status&unix.TIOCM_RTS != 0, nil
+}
+
+// WaitForSignalChange blocks until any monitored signal changes state
+// Returns new signal states and which signal(s) changed
+func (p *port) WaitForSignalChange(mask SignalMask, timeout time.Duration) (ModemSignals, SignalMask, error) {
+	if mask == 0 {
+		return ModemSignals{}, 0, ErrInvalidSignalMask
+	}
+
+	p.mu.RLock()
+	if p.closed {
+		p.mu.RUnlock()
+		return ModemSignals{}, 0, ErrPortClosed
+	}
+	fd := p.fd
+	p.mu.RUnlock()
+
+	// Get initial signal state
+	oldStatus, err := getModemStatus(fd)
+	if err != nil {
+		return ModemSignals{}, 0, err
+	}
+
+	// Convert mask to TIOCM bits
+	tiocmBits := signalMaskToTIOCM(mask)
+
+	// Channel for wait result
+	type waitResult struct {
+		newStatus int
+		err       error
+	}
+	resultCh := make(chan waitResult, 1)
+
+	// Wait for signal change in goroutine
+	go func() {
+		err := unix.IoctlSetInt(fd, unix.TIOCMIWAIT, tiocmBits)
+		if err != nil {
+			resultCh <- waitResult{err: err}
+			return
+		}
+
+		// Get new status after change
+		newStatus, err := getModemStatus(fd)
+		resultCh <- waitResult{newStatus: newStatus, err: err}
+	}()
+
+	// Wait for result or timeout
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case result := <-resultCh:
+		if result.err != nil {
+			return ModemSignals{}, 0, result.err
+		}
+
+		// Detect which signals changed
+		changed := detectSignalChanges(oldStatus, result.newStatus)
+
+		// Convert to ModemSignals
+		signals := ModemSignals{
+			CTS: result.newStatus&unix.TIOCM_CTS != 0,
+			DSR: result.newStatus&unix.TIOCM_DSR != 0,
+			RI:  result.newStatus&unix.TIOCM_RI != 0,
+			DCD: result.newStatus&unix.TIOCM_CAR != 0,
+			RTS: result.newStatus&unix.TIOCM_RTS != 0,
+			DTR: result.newStatus&unix.TIOCM_DTR != 0,
+		}
+
+		return signals, changed, nil
+
+	case <-timer.C:
+		return ModemSignals{}, 0, ErrSignalTimeout
+	}
+}
+
+// WaitForSignalChangeContext waits with context cancellation support
+func (p *port) WaitForSignalChangeContext(ctx context.Context, mask SignalMask) (ModemSignals, SignalMask, error) {
+	if mask == 0 {
+		return ModemSignals{}, 0, ErrInvalidSignalMask
+	}
+
+	p.mu.RLock()
+	if p.closed {
+		p.mu.RUnlock()
+		return ModemSignals{}, 0, ErrPortClosed
+	}
+	fd := p.fd
+	p.mu.RUnlock()
+
+	// Check if context is already cancelled
+	select {
+	case <-ctx.Done():
+		return ModemSignals{}, 0, ctx.Err()
+	default:
+	}
+
+	// Get initial signal state
+	oldStatus, err := getModemStatus(fd)
+	if err != nil {
+		return ModemSignals{}, 0, err
+	}
+
+	// Convert mask to TIOCM bits
+	tiocmBits := signalMaskToTIOCM(mask)
+
+	// Channel for wait result
+	type waitResult struct {
+		newStatus int
+		err       error
+	}
+	resultCh := make(chan waitResult, 1)
+
+	// Wait for signal change in goroutine
+	go func() {
+		err := unix.IoctlSetInt(fd, unix.TIOCMIWAIT, tiocmBits)
+		if err != nil {
+			resultCh <- waitResult{err: err}
+			return
+		}
+
+		// Get new status after change
+		newStatus, err := getModemStatus(fd)
+		resultCh <- waitResult{newStatus: newStatus, err: err}
+	}()
+
+	// Wait for result or context cancellation
+	select {
+	case result := <-resultCh:
+		if result.err != nil {
+			return ModemSignals{}, 0, result.err
+		}
+
+		// Detect which signals changed
+		changed := detectSignalChanges(oldStatus, result.newStatus)
+
+		// Convert to ModemSignals
+		signals := ModemSignals{
+			CTS: result.newStatus&unix.TIOCM_CTS != 0,
+			DSR: result.newStatus&unix.TIOCM_DSR != 0,
+			RI:  result.newStatus&unix.TIOCM_RI != 0,
+			DCD: result.newStatus&unix.TIOCM_CAR != 0,
+			RTS: result.newStatus&unix.TIOCM_RTS != 0,
+			DTR: result.newStatus&unix.TIOCM_DTR != 0,
+		}
+
+		return signals, changed, nil
+
+	case <-ctx.Done():
+		return ModemSignals{}, 0, ctx.Err()
+	}
 }
 
 // Drain waits until all output written to the port has been transmitted

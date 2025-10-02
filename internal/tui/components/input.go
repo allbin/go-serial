@@ -45,7 +45,7 @@ func NewInput(placeholder string) *Input {
 	ti.Prompt = "" // We handle prompt styling separately
 	ti.Focus()
 
-	// Default to hex mode with Neocortec test message pre-populated
+	// Default to hex mode with example hex message pre-populated
 	ti.SetValue("0206000300000099")
 
 	return &Input{
