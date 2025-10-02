@@ -327,6 +327,7 @@ Professional command-line interface with interactive features:
 - [x] **Port Management**: `serial list` with filtering and USB metadata in table view
 - [x] **USB Device Info**: `serial info` displays detailed USB device information
 - [x] **USB Device Reset**: `serial reset` for recovering hung USB devices
+- [x] **Modem Signal Control**: `serial signals`, `serial monitor`, `serial rts`, `serial dtr` for signal monitoring and control
 - [x] **Data Communication**: `serial send` and `serial listen` for basic I/O
 - [x] **Interactive Terminal**: `serial connect` with real-time bidirectional communication
 - [x] **Flow Control Support**: Hardware CTS/RTS support with configurable timeouts
@@ -350,6 +351,14 @@ serial info /dev/ttyUSB0             # Show detailed USB device info
 # USB device management
 sudo serial reset /dev/ttyUSB0       # Reset USB device by port
 sudo serial reset --serial FT123456  # Reset USB device by serial number
+
+# Modem signal control and monitoring
+serial signals /dev/ttyUSB0          # Display current signal states
+serial monitor /dev/ttyUSB0          # Monitor signal changes
+serial monitor /dev/ttyUSB0 --signals cts,dsr  # Monitor specific signals
+serial rts /dev/ttyUSB0 high         # Set RTS high
+serial rts /dev/ttyUSB0 low          # Set RTS low
+serial dtr /dev/ttyUSB0 high         # Set DTR high
 
 # Data communication
 serial listen /dev/ttyUSB0           # Real-time data monitoring

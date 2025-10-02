@@ -25,6 +25,8 @@ type Port interface {
 	GetModemSignals() (ModemSignals, error)
 	SetRTS(state bool) error
 	GetRTS() (bool, error)
+	SetDTR(state bool) error
+	GetDTR() (bool, error)
 	WaitForSignalChange(mask SignalMask, timeout time.Duration) (ModemSignals, SignalMask, error)
 	WaitForSignalChangeContext(ctx context.Context, mask SignalMask) (ModemSignals, SignalMask, error)
 }
@@ -625,10 +627,21 @@ func (p *port) SetRTS(state bool) error {
 		return ErrPortClosed
 	}
 
-	if state {
-		return unix.IoctlSetInt(p.fd, unix.TIOCMBIS, unix.TIOCM_RTS)
+	// Read current modem status
+	status, err := unix.IoctlGetInt(p.fd, unix.TIOCMGET)
+	if err != nil {
+		return err
 	}
-	return unix.IoctlSetInt(p.fd, unix.TIOCMBIC, unix.TIOCM_RTS)
+
+	// Modify RTS bit
+	if state {
+		status |= unix.TIOCM_RTS
+	} else {
+		status &^= unix.TIOCM_RTS
+	}
+
+	// Write back
+	return unix.IoctlSetPointerInt(p.fd, unix.TIOCMSET, status)
 }
 
 // GetRTS returns current RTS signal state
@@ -646,6 +659,51 @@ func (p *port) GetRTS() (bool, error) {
 	}
 
 	return status&unix.TIOCM_RTS != 0, nil
+}
+
+// SetDTR manually sets the DTR signal state
+// When true, asserts DTR (signals terminal ready)
+// When false, deasserts DTR (signals terminal not ready)
+func (p *port) SetDTR(state bool) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.closed {
+		return ErrPortClosed
+	}
+
+	// Read current modem status
+	status, err := unix.IoctlGetInt(p.fd, unix.TIOCMGET)
+	if err != nil {
+		return err
+	}
+
+	// Modify DTR bit
+	if state {
+		status |= unix.TIOCM_DTR
+	} else {
+		status &^= unix.TIOCM_DTR
+	}
+
+	// Write back
+	return unix.IoctlSetPointerInt(p.fd, unix.TIOCMSET, status)
+}
+
+// GetDTR returns current DTR signal state
+func (p *port) GetDTR() (bool, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	if p.closed {
+		return false, ErrPortClosed
+	}
+
+	status, err := getModemStatus(p.fd)
+	if err != nil {
+		return false, err
+	}
+
+	return status&unix.TIOCM_DTR != 0, nil
 }
 
 // WaitForSignalChange blocks until any monitored signal changes state
