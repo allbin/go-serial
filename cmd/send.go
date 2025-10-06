@@ -73,6 +73,7 @@ Example usage:
 		addNewline, _ := cmd.Flags().GetBool("newline")
 		hexMode, _ := cmd.Flags().GetBool("hex")
 		timeout, _ := cmd.Flags().GetDuration("timeout")
+		initialRTS, _ := cmd.Flags().GetBool("initial-rts")
 
 		// Configure port options
 		opts := []serial.Option{
@@ -82,8 +83,14 @@ Example usage:
 		switch strings.ToLower(flowControl) {
 		case "cts":
 			opts = append(opts, serial.WithFlowControl(serial.FlowControlCTS))
+			if initialRTS {
+				opts = append(opts, serial.WithInitialRTS(true))
+			}
 		case "rtscts":
 			opts = append(opts, serial.WithFlowControl(serial.FlowControlRTSCTS))
+			if initialRTS {
+				opts = append(opts, serial.WithInitialRTS(true))
+			}
 		}
 
 		// Process data based on flags
@@ -117,6 +124,7 @@ func init() {
 	sendCmd.Flags().BoolP("newline", "n", false, "Add newline character to the end of data")
 	sendCmd.Flags().BoolP("hex", "x", false, "Interpret data as hexadecimal (e.g., '48656c6c6f' for 'Hello')")
 	sendCmd.Flags().DurationP("timeout", "t", 5*time.Second, "Timeout for sending data (default: 5s)")
+	sendCmd.Flags().Bool("initial-rts", false, "Assert RTS on port open (required for CTS flow control)")
 }
 
 func promptForData() string {

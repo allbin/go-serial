@@ -48,8 +48,8 @@ with real-time bidirectional communication. Features include:
 Example usage:
   serial connect /dev/ttyUSB0
   serial connect /dev/ttyUSB0 --baud 9600
-  serial connect /dev/ttyUSB0 --flow-control cts --cts-timeout 1000
-  serial connect /dev/ttyUSB0  # Connect to serial port`,
+  serial connect /dev/ttyUSB0 --flow-control cts --initial-rts
+  serial connect /dev/ttyUSB0 --flow-control cts --initial-rts --cts-timeout 1000`,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		portPath := args[0]
@@ -59,6 +59,7 @@ Example usage:
 		flowControl, _ := cmd.Flags().GetString("flow-control")
 		ctsTimeoutMs, _ := cmd.Flags().GetInt("cts-timeout")
 		syncWrites, _ := cmd.Flags().GetBool("sync-writes")
+		initialRTS, _ := cmd.Flags().GetBool("initial-rts")
 
 		// Configure port options
 		opts := []serial.Option{
@@ -77,8 +78,14 @@ Example usage:
 		switch strings.ToLower(flowControl) {
 		case "cts":
 			opts = append(opts, serial.WithFlowControl(serial.FlowControlCTS))
+			if initialRTS {
+				opts = append(opts, serial.WithInitialRTS(true))
+			}
 		case "rtscts":
 			opts = append(opts, serial.WithFlowControl(serial.FlowControlRTSCTS))
+			if initialRTS {
+				opts = append(opts, serial.WithInitialRTS(true))
+			}
 		}
 
 		// Start the TUI
@@ -97,6 +104,7 @@ func init() {
 	connectCmd.Flags().StringP("flow-control", "f", "none", "Flow control: none, cts, rtscts (default: none)")
 	connectCmd.Flags().IntP("cts-timeout", "t", 500, "CTS timeout in milliseconds (default: 500)")
 	connectCmd.Flags().Bool("sync-writes", false, "Enable synchronous writes (O_SYNC) for guaranteed transmission")
+	connectCmd.Flags().Bool("initial-rts", false, "Assert RTS on port open (required for CTS flow control)")
 }
 
 // connectModel represents the Bubble Tea model for the connect command
@@ -150,6 +158,7 @@ func runConnectTUI(portPath string, opts ...serial.Option) error {
 	go func() {
 		port, err := serial.Open(portPath, opts...)
 		if err != nil {
+			fmt.Fprintf(os.Stderr, "[ERROR] Failed to open port: %v\n", err)
 			p.Send(models.ConnectionStatusMsg{Connected: false, Error: err})
 			return
 		}
@@ -361,18 +370,37 @@ func (m *connectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// Get sequence number for this TX message
 					sequence := m.GetNextSequence()
 
+					// Capture enqueue time before creating goroutine
+					enqueuedTime := time.Now()
+
 					// Return single command for final status update
 					cmds = append(cmds, func() tea.Msg {
 						err := <-writeStatusCh
+						writtenTime := time.Now() // Capture when write completed
+
+						// Debug: Log any error
+						if err != nil {
+							fmt.Fprintf(os.Stderr, "[DEBUG] Write error: %v (type: %T)\n", err, err)
+						} else {
+							fmt.Fprintf(os.Stderr, "[DEBUG] Write succeeded\n")
+						}
+
 						// Send completion status with same sequence number
 						finalStatus := components.DataReceivedMsg{
-							Timestamp: time.Now(),
-							Data:      displayData,
-							IsTX:      true,
-							Sequence:  sequence,
+							Timestamp:    writtenTime,
+							Data:         displayData,
+							IsTX:         true,
+							Sequence:     sequence,
+							EnqueuedTime: &enqueuedTime,
+							WrittenTime:  &writtenTime,
 						}
 						if err != nil {
-							finalStatus.Status = "ERROR"
+							// Check if it's a timeout error
+							if err == serial.ErrCTSTimeout || err == context.DeadlineExceeded {
+								finalStatus.Status = "TIMEOUT"
+							} else {
+								finalStatus.Status = "ERROR"
+							}
 						} else {
 							finalStatus.Status = "WRITTEN"
 						}
@@ -380,13 +408,14 @@ func (m *connectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					})
 
 					// Add to display with TX prefix (initially as PENDING)
-					timestamp := time.Now()
+					timestamp := enqueuedTime
 					txData := components.DataReceivedMsg{
-						Timestamp: timestamp,
-						Data:      displayData,
-						IsTX:      true,
-						Status:    "PENDING",
-						Sequence:  sequence,
+						Timestamp:    timestamp,
+						Data:         displayData,
+						IsTX:         true,
+						Status:       "PENDING",
+						Sequence:     sequence,
+						EnqueuedTime: &enqueuedTime,
 					}
 					// Add to both raw data store and terminal display
 					m.AddRawData(txData)

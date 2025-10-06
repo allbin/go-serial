@@ -41,6 +41,7 @@ func main() {
     port, err = serial.Open("/dev/ttyUSB0",
         serial.WithBaudRate(115200),
         serial.WithFlowControl(serial.FlowControlCTS),
+        serial.WithInitialRTS(true),  // Required for CTS flow control
         serial.WithCTSTimeout(200*time.Millisecond),
     )
     if err != nil {
@@ -234,12 +235,12 @@ serial.WithBaudRate(115200)
 serial.WithDataBits(8)              // 5, 6, 7, 8
 serial.WithStopBits(1)              // 1, 2
 serial.WithParity(serial.ParityEven) // None, Odd, Even, Mark, Space
-serial.WithFlowControl(serial.FlowControlCTS) // None, CTS, RTSCTS
-serial.WithCTSTimeout(500*time.Millisecond)
+serial.WithFlowControl(serial.FlowControlCTS) // None, CTS, RTSCTS (requires WithInitialRTS)
+serial.WithCTSTimeout(10*time.Second)
 serial.WithReadTimeout(25)          // VTIME in tenths of seconds (0-255)
 serial.WithWriteMode(serial.WriteModeSynced) // Buffered, Synced
 serial.WithSyncWrite()              // Shorthand for synced writes
-serial.WithInitialRTS(true)         // Set initial RTS state
+serial.WithInitialRTS(true)         // Set initial RTS state (required for flow control)
 serial.WithInitialDTR(true)         // Set initial DTR state
 ```
 
@@ -250,7 +251,7 @@ serial.WithInitialDTR(true)         // Set initial DTR state
 - **StopBits**: 1
 - **Parity**: None
 - **FlowControl**: None
-- **CTSTimeout**: 500ms
+- **CTSTimeout**: 10s
 - **ReadTimeout**: 2.5 seconds (25 tenths)
 - **WriteMode**: Buffered
 
@@ -288,6 +289,63 @@ if errors.Is(err, serial.ErrSignalTimeout) {
 - USB device reset requires `usbreset` utility from `usbutils` package
 - On non-Linux platforms, USB metadata fields return empty strings
 - USB reset functions return `ErrUSBInfoNotAvailable` on non-Linux systems
+
+### Hardware-Specific Considerations
+
+#### Neocortec Mesh Network Modules
+
+Neocortec modules use **scheduled event-based CTS signaling** rather than continuous CTS availability:
+
+**CTS Timing Characteristics:**
+- CTS window: Default 488 microseconds (16 units x 30.5us, configurable 1-255 via AAPI ID 51)
+- CTS only activates during TX Scheduled Data events
+- Events occur periodically based on Scheduled Data Rate configuration
+- Between events, the module may sleep for power conservation
+- **Note**: CTS signaling follows standard UART conventions (TIOCM_CTS bit set = ready to send)
+
+**Configuration Requirements:**
+```go
+port, err := serial.Open("/dev/ttyUSB0",
+    serial.WithBaudRate(115200),              // Neocortec default: 115200, 8N1
+    serial.WithFlowControl(serial.FlowControlCTS),
+    serial.WithInitialRTS(true),              // Assert RTS on port open
+    serial.WithCTSTimeout(10*time.Second),    // Worst-case: wait for next scheduled event
+)
+```
+
+**Why Large Timeout is Needed:**
+- CTS activates only during scheduled data events (potentially seconds apart)
+- Missing the 488us window requires waiting for next event
+- Default 10s timeout accommodates worst-case scheduled data periods
+- For faster response, configure module's CTS Interleave (AAPI ID 50) to trigger on every Wake Up event
+
+**Implementation Details:**
+- Write operations are **pre-queued** before CTS goes LOW
+- When CTS activates (goes LOW), data is written **immediately** with no scheduling delay
+- This ensures transmission begins within the 488us CTS window
+- Pattern matches Neocortec's reference implementation for maximum reliability
+
+**Troubleshooting:**
+- First message works, subsequent fail: Likely missing CTS windows between scheduled events
+- Consistent failures: Check CTS polarity, module configuration, or physical connections
+- Monitor CTS events: `serial monitor /dev/ttyUSB0 --signals cts`
+
+**Module Configuration (via System UART):**
+- AAPI CTS Timeout (ID 51): Increase for longer host transmission windows
+- AAPI CTS Interleave (ID 50): Set to 0 for more frequent CTS events
+- Scheduled Data Rate: Adjust event frequency for application needs
+
+**Physical Interface:**
+- **CTS (pin 19/4)**: Module output, asserted when ready to receive data
+- **RTS**: Not used by Neocortec for flow control (can be asserted high during initialization)
+- **UART**: 115200 baud, 8N1, no parity
+
+#### Other Scheduled Event-Based Devices
+
+Similar considerations apply to any device using event-driven CTS signaling:
+- Set CTSTimeout to accommodate event period (not just CTS pulse width)
+- Monitor CTS activity to understand device timing pattern
+- Consider device sleep/wake cycles when planning communication
 
 ## Architecture Principles
 
@@ -367,7 +425,14 @@ echo "test" | serial send /dev/ttyUSB0   # Pipe data to port
 
 # Interactive terminal
 serial connect /dev/ttyUSB0          # Bidirectional communication
-serial connect /dev/ttyUSB0 --sync-writes --flow-control cts
+serial connect /dev/ttyUSB0 --flow-control cts --initial-rts
+serial connect /dev/ttyUSB0 --sync-writes --flow-control cts --initial-rts
+
+# Connect UI features:
+# - Real-time TX status tracking: ENQUEUED → SENT (with timing in ms)
+# - Visual feedback: Yellow (enqueued), Green (sent), Orange (timeout), Red (error)
+# - CTS flow control timing visibility for debugging
+# - Timeout messages show "MAY STILL SEND" (queued writes may complete after timeout)
 ```
 
 #### Repository Structure
@@ -418,7 +483,7 @@ go install github.com/allbin/go-serial/cmd/serial@latest
 
 # Development usage
 go run ./cmd/serial list --table --filter usb
-go run ./cmd/serial connect /dev/ttyUSB0 --flow-control cts
+go run ./cmd/serial connect /dev/ttyUSB0 --flow-control cts --initial-rts
 ```
 
 ---

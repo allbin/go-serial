@@ -3,6 +3,7 @@ package serial
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -83,11 +84,24 @@ const (
 	SignalDCD
 )
 
+// writeRequest represents a queued write operation waiting for CTS
+type writeRequest struct {
+	data     []byte
+	resultCh chan writeResult
+}
+
+// writeResult contains the result of a write operation
+type writeResult struct {
+	n   int
+	err error
+}
+
 // ctsMonitor handles CTS signal monitoring using TIOCMIWAIT
+// It pre-queues write operations and executes them immediately when CTS goes LOW
 type ctsMonitor struct {
-	fd       int
-	stopCh   chan struct{}
-	activeCh chan struct{}
+	fd      int
+	stopCh  chan struct{}
+	writeCh chan *writeRequest // Queue for pending writes
 }
 
 // getBaudRate converts an integer baud rate to the unix constant
@@ -170,18 +184,40 @@ func assertRTS(fd int) error {
 
 // setDTR sets DTR signal state
 func setDTR(fd int, state bool) error {
-	if state {
-		return unix.IoctlSetInt(fd, unix.TIOCMBIS, unix.TIOCM_DTR)
+	// Read current modem status
+	status, err := unix.IoctlGetInt(fd, unix.TIOCMGET)
+	if err != nil {
+		return err
 	}
-	return unix.IoctlSetInt(fd, unix.TIOCMBIC, unix.TIOCM_DTR)
+
+	// Modify DTR bit
+	if state {
+		status |= unix.TIOCM_DTR
+	} else {
+		status &^= unix.TIOCM_DTR
+	}
+
+	// Write back using TIOCMSET
+	return unix.IoctlSetPointerInt(fd, unix.TIOCMSET, status)
 }
 
 // setRTSSignal sets RTS signal state
 func setRTSSignal(fd int, state bool) error {
-	if state {
-		return unix.IoctlSetInt(fd, unix.TIOCMBIS, unix.TIOCM_RTS)
+	// Read current modem status
+	status, err := unix.IoctlGetInt(fd, unix.TIOCMGET)
+	if err != nil {
+		return err
 	}
-	return unix.IoctlSetInt(fd, unix.TIOCMBIC, unix.TIOCM_RTS)
+
+	// Modify RTS bit
+	if state {
+		status |= unix.TIOCM_RTS
+	} else {
+		status &^= unix.TIOCM_RTS
+	}
+
+	// Write back using TIOCMSET
+	return unix.IoctlSetPointerInt(fd, unix.TIOCMSET, status)
 }
 
 // waitForCTSChange waits for CTS signal changes using TIOCMIWAIT
@@ -228,41 +264,74 @@ func detectSignalChanges(oldStatus, newStatus int) SignalMask {
 // newCTSMonitor creates a new CTS monitor
 func newCTSMonitor(fd int) *ctsMonitor {
 	return &ctsMonitor{
-		fd:       fd,
-		stopCh:   make(chan struct{}),
-		activeCh: make(chan struct{}, 1), // Buffered to prevent blocking
+		fd:      fd,
+		stopCh:  make(chan struct{}),
+		writeCh: make(chan *writeRequest, 1), // Buffered for one pending write
 	}
 }
 
 // start begins CTS monitoring in a background goroutine
+// This goroutine pre-queues write operations and executes them immediately when CTS goes LOW
 func (c *ctsMonitor) start() {
 	go func() {
+		var pendingWrite *writeRequest
+
 		for {
+			// If no pending write, wait for either a write request or stop signal
+			if pendingWrite == nil {
+				select {
+				case <-c.stopCh:
+					return
+				case req := <-c.writeCh:
+					pendingWrite = req
+				}
+			}
+
+			// We have a pending write, check if CTS is already active
+			status, err := getModemStatus(c.fd)
+			if err != nil {
+				// Send error back and clear pending write
+				if pendingWrite != nil {
+					pendingWrite.resultCh <- writeResult{0, err}
+					pendingWrite = nil
+				}
+				continue
+			}
+
+			// Check if CTS is active (TIOCM_CTS bit set = ready to send)
+			if status&unix.TIOCM_CTS != 0 {
+				// CTS is active, write immediately
+				n, err := unix.Write(c.fd, pendingWrite.data)
+				pendingWrite.resultCh <- writeResult{n, err}
+				pendingWrite = nil
+				continue
+			}
+
+			// CTS is not active, wait for it to change
+			// Use non-blocking wait with timeout to allow checking stop signal
+			done := make(chan error, 1)
+			go func() {
+				done <- waitForCTSChange(c.fd)
+			}()
+
 			select {
 			case <-c.stopCh:
+				// Port closing, send error to pending write
+				if pendingWrite != nil {
+					pendingWrite.resultCh <- writeResult{0, ErrPortClosed}
+					pendingWrite = nil
+				}
 				return
-			default:
-				// Wait for CTS signal change
-				err := waitForCTSChange(c.fd)
+			case err := <-done:
 				if err != nil {
-					// Error occurred, exit monitoring
+					// Error waiting for CTS change
+					if pendingWrite != nil {
+						pendingWrite.resultCh <- writeResult{0, err}
+						pendingWrite = nil
+					}
 					return
 				}
-
-				// Check if CTS is now active
-				status, err := getModemStatus(c.fd)
-				if err != nil {
-					continue
-				}
-
-				if status&unix.TIOCM_CTS != 0 {
-					// CTS is active, signal waiting write operations
-					select {
-					case c.activeCh <- struct{}{}:
-					default:
-						// Channel already has a signal, skip
-					}
-				}
+				// CTS changed, loop back to check if it's active now
 			}
 		}
 	}()
@@ -273,28 +342,35 @@ func (c *ctsMonitor) stop() {
 	close(c.stopCh)
 }
 
-// waitForCTS waits for CTS to become active with timeout
-func (c *ctsMonitor) waitForCTS(timeout time.Duration) error {
-	// First check if CTS is already active
-	status, err := getModemStatus(c.fd)
-	if err != nil {
-		return err
-	}
-	if status&unix.TIOCM_CTS != 0 {
-		return nil // CTS already active
+// queueWrite queues a write operation and waits for it to complete
+// The write will be executed immediately when CTS goes LOW
+func (c *ctsMonitor) queueWrite(data []byte, timeout time.Duration) (int, error) {
+	req := &writeRequest{
+		data:     data,
+		resultCh: make(chan writeResult, 1),
 	}
 
-	// Wait for CTS to become active
+	// Try to enqueue the write request
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
 	select {
-	case <-c.activeCh:
-		return nil
+	case c.writeCh <- req:
+		// Request queued successfully, wait for result
 	case <-timer.C:
-		return ErrCTSTimeout
+		return 0, ErrCTSTimeout
 	case <-c.stopCh:
-		return ErrPortClosed
+		return 0, ErrPortClosed
+	}
+
+	// Wait for the write to complete
+	select {
+	case result := <-req.resultCh:
+		return result.n, result.err
+	case <-timer.C:
+		return 0, ErrCTSTimeout
+	case <-c.stopCh:
+		return 0, ErrPortClosed
 	}
 }
 
@@ -306,6 +382,14 @@ func Open(device string, opts ...Option) (Port, error) {
 		if err := opt(&config); err != nil {
 			return nil, err
 		}
+	}
+
+	// Validate flow control configuration
+	if config.FlowControl == FlowControlCTS && config.InitialRTS == nil {
+		return nil, fmt.Errorf("CTS flow control requires WithInitialRTS(true) to assert RTS")
+	}
+	if config.FlowControl == FlowControlRTSCTS && config.InitialRTS == nil {
+		return nil, fmt.Errorf("RTS/CTS flow control requires WithInitialRTS(true) to assert RTS")
 	}
 
 	// Open device file using unix.Open for better control
@@ -330,6 +414,12 @@ func Open(device string, opts ...Option) (Port, error) {
 		if err := setRTSSignal(fd, *config.InitialRTS); err != nil {
 			unix.Close(fd)
 			return nil, fmt.Errorf("failed to set initial RTS: %v", err)
+		}
+		// Verify RTS was set
+		status, err := getModemStatus(fd)
+		if err == nil {
+			rtsState := status&unix.TIOCM_RTS != 0
+			fmt.Fprintf(os.Stderr, "[DEBUG] Initial RTS set to %v, verified: %v\n", *config.InitialRTS, rtsState)
 		}
 	}
 	if config.InitialDTR != nil {
@@ -422,13 +512,6 @@ func configurePort(fd int, config Config) error {
 		return fmt.Errorf("failed to set termios: %v", err)
 	}
 
-	// For RTS/CTS flow control, ensure RTS is asserted to signal readiness
-	if config.FlowControl == FlowControlRTSCTS {
-		if err := assertRTS(fd); err != nil {
-			// Non-fatal - some systems might not support manual RTS control
-		}
-	}
-
 	return nil
 }
 
@@ -473,13 +556,12 @@ func (p *port) Write(data []byte) (int, error) {
 	}
 
 	// Handle CTS flow control if enabled
+	// Data is pre-queued and written immediately when CTS goes LOW
 	if p.config.FlowControl == FlowControlCTS && p.ctsMonitor != nil {
-		if err := p.ctsMonitor.waitForCTS(p.config.CTSTimeout); err != nil {
-			return 0, err
-		}
+		return p.ctsMonitor.queueWrite(data, p.config.CTSTimeout)
 	}
 
-	// Perform the write
+	// No flow control, perform direct write
 	return unix.Write(p.fd, data)
 }
 
@@ -510,25 +592,36 @@ func (p *port) WriteContext(ctx context.Context, data []byte) (int, error) {
 			}
 		}
 
-		if err := p.ctsMonitor.waitForCTS(timeout); err != nil {
-			return 0, err
+		// Create channel for queueWrite result
+		resultCh := make(chan writeResult, 1)
+
+		// Queue write in goroutine to allow context cancellation
+		go func() {
+			n, err := p.ctsMonitor.queueWrite(data, timeout)
+			resultCh <- writeResult{n: n, err: err}
+		}()
+
+		// Wait for write completion or context cancellation
+		select {
+		case result := <-resultCh:
+			return result.n, result.err
+		case <-ctx.Done():
+			return 0, ctx.Err()
 		}
 	}
 
-	// Create channel for write result
-	type writeResult struct {
+	// No flow control, perform direct write with context
+	type directWriteResult struct {
 		n   int
 		err error
 	}
-	resultCh := make(chan writeResult, 1)
+	resultCh := make(chan directWriteResult, 1)
 
-	// Perform write in goroutine
 	go func() {
 		n, err := unix.Write(p.fd, data)
-		resultCh <- writeResult{n: n, err: err}
+		resultCh <- directWriteResult{n: n, err: err}
 	}()
 
-	// Wait for write completion or context cancellation
 	select {
 	case result := <-resultCh:
 		return result.n, result.err

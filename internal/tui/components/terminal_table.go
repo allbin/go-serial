@@ -294,6 +294,8 @@ func (tt *TerminalTable) formatMessageAsRow(msg DataReceivedMsg) table.Row {
 			rowStyle = lipgloss.NewStyle().Foreground(colors.Yellow) // Yellow for pending
 		case "WRITTEN":
 			rowStyle = lipgloss.NewStyle().Foreground(colors.Blue) // Blue for successful TX
+		case "TIMEOUT":
+			rowStyle = lipgloss.NewStyle().Foreground(colors.Peach) // Orange/peach for timeout
 		case "ERROR":
 			rowStyle = lipgloss.NewStyle().Foreground(colors.Red) // Red for errors
 		default:

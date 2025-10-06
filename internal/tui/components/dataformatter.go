@@ -10,11 +10,13 @@ import (
 )
 
 type DataReceivedMsg struct {
-	Timestamp time.Time
-	Data      []byte
-	IsTX      bool
-	Status    string // For TX messages: "PENDING", "WRITTEN", "ERROR", empty for RX
-	Sequence  int64  // Unique sequence number for updating messages in place
+	Timestamp    time.Time
+	Data         []byte
+	IsTX         bool
+	Status       string     // For TX messages: "PENDING", "WRITTEN", "ERROR", empty for RX
+	Sequence     int64      // Unique sequence number for updating messages in place
+	EnqueuedTime *time.Time // When message was queued for sending (TX only)
+	WrittenTime  *time.Time // When message was actually written (TX only)
 }
 
 type DisplayMode struct {
@@ -57,13 +59,22 @@ func (df *DataFormatter) FormatMessage(msg DataReceivedMsg) string {
 		switch msg.Status {
 		case "PENDING":
 			txColor = colors.Yellow
-			statusText = "TX"
+			statusText = "TX [ENQUEUED]"
 		case "WRITTEN":
 			txColor = colors.Green
-			statusText = "TX"
+			statusText = "TX [SENT"
+			// Show timing delta if we have both enqueued and written times
+			if msg.EnqueuedTime != nil && msg.WrittenTime != nil {
+				delta := msg.WrittenTime.Sub(*msg.EnqueuedTime)
+				statusText += fmt.Sprintf(" +%dms", delta.Milliseconds())
+			}
+			statusText += "]"
+		case "TIMEOUT":
+			txColor = colors.Peach // Orange/peach for timeout
+			statusText = "TX [TIMEOUT - MAY STILL SEND]"
 		case "ERROR":
 			txColor = colors.Red
-			statusText = "TX"
+			statusText = "TX [ERROR]"
 		default:
 			txColor = colors.Peach
 			statusText = "TX"

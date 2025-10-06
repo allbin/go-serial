@@ -38,7 +38,7 @@ using a terminal user interface. Features include:
 Example usage:
   serial listen /dev/ttyUSB0
   serial listen /dev/ttyUSB0 --baud 9600
-  serial listen /dev/ttyUSB0 --flow-control cts`,
+  serial listen /dev/ttyUSB0 --flow-control cts --initial-rts`,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		portPath := args[0]
@@ -46,6 +46,7 @@ Example usage:
 		// Get flags
 		baudRate, _ := cmd.Flags().GetInt("baud")
 		flowControl, _ := cmd.Flags().GetString("flow-control")
+		initialRTS, _ := cmd.Flags().GetBool("initial-rts")
 
 		// Configure port options
 		opts := []serial.Option{
@@ -55,8 +56,14 @@ Example usage:
 		switch strings.ToLower(flowControl) {
 		case "cts":
 			opts = append(opts, serial.WithFlowControl(serial.FlowControlCTS))
+			if initialRTS {
+				opts = append(opts, serial.WithInitialRTS(true))
+			}
 		case "rtscts":
 			opts = append(opts, serial.WithFlowControl(serial.FlowControlRTSCTS))
+			if initialRTS {
+				opts = append(opts, serial.WithInitialRTS(true))
+			}
 		}
 
 		// Start the TUI
@@ -73,6 +80,7 @@ func init() {
 	// Add flags for serial configuration
 	listenCmd.Flags().IntP("baud", "b", 115200, "Baud rate (default: 115200)")
 	listenCmd.Flags().StringP("flow-control", "f", "none", "Flow control: none, cts, rtscts (default: none)")
+	listenCmd.Flags().Bool("initial-rts", false, "Assert RTS on port open (required for CTS flow control)")
 }
 
 // listenModel represents the Bubble Tea model for the listen command
@@ -120,6 +128,7 @@ func runListenTUI(portPath string, opts ...serial.Option) error {
 	go func() {
 		port, err := serial.Open(portPath, opts...)
 		if err != nil {
+			fmt.Fprintf(os.Stderr, "[ERROR] Failed to open port: %v\n", err)
 			p.Send(models.ConnectionStatusMsg{Connected: false, Error: err})
 			return
 		}

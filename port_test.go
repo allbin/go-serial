@@ -30,8 +30,8 @@ func TestDefaultConfig(t *testing.T) {
 		t.Errorf("Expected FlowControl None, got %v", config.FlowControl)
 	}
 
-	if config.CTSTimeout != 500*time.Millisecond {
-		t.Errorf("Expected CTSTimeout 500ms, got %v", config.CTSTimeout)
+	if config.CTSTimeout != 10*time.Second {
+		t.Errorf("Expected CTSTimeout 10s, got %v", config.CTSTimeout)
 	}
 }
 
@@ -157,6 +157,49 @@ func TestOpenNonExistentDevice(t *testing.T) {
 	errorString := err.Error()
 	if !strings.Contains(errorString, "no such file or directory") && !strings.Contains(errorString, "nonexistent") {
 		t.Errorf("Expected error about non-existent device, got %v", err)
+	}
+}
+
+func TestFlowControlValidation(t *testing.T) {
+	// Test CTS flow control without InitialRTS
+	config := DefaultConfig()
+	err := WithFlowControl(FlowControlCTS)(&config)
+	if err != nil {
+		t.Errorf("WithFlowControl should not fail: %v", err)
+	}
+
+	// Open should fail without InitialRTS
+	_, err = Open("/dev/nonexistent", WithFlowControl(FlowControlCTS))
+	if err == nil {
+		t.Error("Expected error for CTS flow control without InitialRTS")
+	}
+	if !strings.Contains(err.Error(), "InitialRTS") {
+		t.Errorf("Expected error about InitialRTS, got: %v", err)
+	}
+
+	// Test RTS/CTS flow control without InitialRTS
+	_, err = Open("/dev/nonexistent", WithFlowControl(FlowControlRTSCTS))
+	if err == nil {
+		t.Error("Expected error for RTS/CTS flow control without InitialRTS")
+	}
+	if !strings.Contains(err.Error(), "InitialRTS") {
+		t.Errorf("Expected error about InitialRTS, got: %v", err)
+	}
+
+	// Validation should pass with InitialRTS set
+	config = DefaultConfig()
+	err = WithFlowControl(FlowControlCTS)(&config)
+	if err != nil {
+		t.Errorf("WithFlowControl should not fail: %v", err)
+	}
+	err = WithInitialRTS(true)(&config)
+	if err != nil {
+		t.Errorf("WithInitialRTS should not fail: %v", err)
+	}
+	// This will still fail because device doesn't exist, but not due to validation
+	_, err = Open("/dev/nonexistent", WithFlowControl(FlowControlCTS), WithInitialRTS(true))
+	if err != nil && strings.Contains(err.Error(), "InitialRTS") {
+		t.Errorf("Should not fail validation with InitialRTS set, got: %v", err)
 	}
 }
 
