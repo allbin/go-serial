@@ -116,7 +116,7 @@
 //   - StopBits: 1
 //   - Parity: None
 //   - FlowControl: None
-//   - CTSTimeout: 10s
+//   - CTSTimeout: 60s
 //   - ReadTimeout: 2.5 seconds
 //   - WriteMode: Buffered
 //

@@ -35,7 +35,7 @@ func DefaultConfig() Config {
 		StopBits:          1,
 		Parity:            ParityNone,
 		FlowControl:       FlowControlNone,
-		CTSTimeout:        10 * time.Second, // Worst-case for scheduled event-based modules (e.g. Neocortec)
+		CTSTimeout:        60 * time.Second, // Neocortec reference default (matches NcConstants.DefaultCtsTimeOutMs)
 		ReadTimeoutTenths: 25,               // 2.5 seconds - match reference 250ms * 10
 		WriteMode:         WriteModeBuffered,
 	}

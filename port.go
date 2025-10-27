@@ -3,7 +3,6 @@ package serial
 import (
 	"context"
 	"fmt"
-	"os"
 	"sync"
 	"time"
 
@@ -417,9 +416,14 @@ func Open(device string, opts ...Option) (Port, error) {
 		}
 		// Verify RTS was set
 		status, err := getModemStatus(fd)
-		if err == nil {
-			rtsState := status&unix.TIOCM_RTS != 0
-			fmt.Fprintf(os.Stderr, "[DEBUG] Initial RTS set to %v, verified: %v\n", *config.InitialRTS, rtsState)
+		if err != nil {
+			unix.Close(fd)
+			return nil, fmt.Errorf("failed to verify initial RTS: %v", err)
+		}
+		rtsState := status&unix.TIOCM_RTS != 0
+		if rtsState != *config.InitialRTS {
+			unix.Close(fd)
+			return nil, fmt.Errorf("initial RTS verification failed: requested %v, got %v", *config.InitialRTS, rtsState)
 		}
 	}
 	if config.InitialDTR != nil {

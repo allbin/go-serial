@@ -251,7 +251,7 @@ serial.WithInitialDTR(true)         // Set initial DTR state
 - **StopBits**: 1
 - **Parity**: None
 - **FlowControl**: None
-- **CTSTimeout**: 10s
+- **CTSTimeout**: 60s
 - **ReadTimeout**: 2.5 seconds (25 tenths)
 - **WriteMode**: Buffered
 
@@ -303,20 +303,22 @@ Neocortec modules use **scheduled event-based CTS signaling** rather than contin
 - Between events, the module may sleep for power conservation
 - **Note**: CTS signaling follows standard UART conventions (TIOCM_CTS bit set = ready to send)
 
-**Configuration Requirements:**
+**Quick Configuration:**
 ```go
 port, err := serial.Open("/dev/ttyUSB0",
-    serial.WithBaudRate(115200),              // Neocortec default: 115200, 8N1
+    serial.WithBaudRate(115200),                 // NC default: 115200, 8N1
     serial.WithFlowControl(serial.FlowControlCTS),
-    serial.WithInitialRTS(true),              // Assert RTS on port open
-    serial.WithCTSTimeout(10*time.Second),    // Worst-case: wait for next scheduled event
+    serial.WithInitialRTS(true),                 // Assert RTS on port open
+    serial.WithCTSTimeout(60*time.Second),       // NC reference default: 60s
 )
 ```
+
+**For complete initialization guide, see [docs/neocortec-initialization.md](docs/neocortec-initialization.md)**
 
 **Why Large Timeout is Needed:**
 - CTS activates only during scheduled data events (potentially seconds apart)
 - Missing the 488us window requires waiting for next event
-- Default 10s timeout accommodates worst-case scheduled data periods
+- Default 60s timeout matches Neocortec reference implementation
 - For faster response, configure module's CTS Interleave (AAPI ID 50) to trigger on every Wake Up event
 
 **Implementation Details:**
@@ -386,7 +388,8 @@ Professional command-line interface with interactive features:
 - [x] **USB Device Info**: `serial info` displays detailed USB device information
 - [x] **USB Device Reset**: `serial reset` for recovering hung USB devices
 - [x] **Modem Signal Control**: `serial signals`, `serial monitor`, `serial rts`, `serial dtr` for signal monitoring and control
-- [x] **Data Communication**: `serial send` and `serial listen` for basic I/O
+- [x] **Data Communication**: `serial send`, `serial listen`, and `serial capture` for I/O operations
+- [x] **File Capture**: `serial capture` writes incoming data directly to file for later parsing
 - [x] **Interactive Terminal**: `serial connect` with real-time bidirectional communication
 - [x] **Flow Control Support**: Hardware CTS/RTS support with configurable timeouts
 - [x] **Advanced Features**: Synchronous writes, hex mode, timeout control
@@ -420,6 +423,8 @@ serial dtr /dev/ttyUSB0 high         # Set DTR high
 
 # Data communication
 serial listen /dev/ttyUSB0           # Real-time data monitoring
+serial capture /dev/ttyUSB0 data.log # Capture data to file
+serial capture /dev/ttyUSB0 data.log --console  # Capture and display on console
 serial send "Hello World" /dev/ttyUSB0  # Send data to port
 echo "test" | serial send /dev/ttyUSB0   # Pipe data to port
 

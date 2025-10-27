@@ -30,8 +30,8 @@ func TestDefaultConfig(t *testing.T) {
 		t.Errorf("Expected FlowControl None, got %v", config.FlowControl)
 	}
 
-	if config.CTSTimeout != 10*time.Second {
-		t.Errorf("Expected CTSTimeout 10s, got %v", config.CTSTimeout)
+	if config.CTSTimeout != 60*time.Second {
+		t.Errorf("Expected CTSTimeout 60s, got %v", config.CTSTimeout)
 	}
 }
 
