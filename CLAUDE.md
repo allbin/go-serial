@@ -60,3 +60,25 @@ This is a Go package for serial communication (`github.com/allbin/serial`) using
 - **Update README.md when making progress** - If you complete features, fix issues, or make changes that affect the project status, update the README.md to reflect current state
 - **Track progress in README.md** - Use the implementation status sections to show what's completed, in progress, or planned for future
 - **Never use emojis** - Keep all markdown clean and readable without visual noise from emojis
+
+## Session Learnings
+
+### Context Needs
+
+- When user asks "why" about design decisions, consider if they want it changed rather than just explained
+- Check all usage sites when changing APIs (library code, CLI commands, tests, docs)
+
+### API Changes
+
+- For type changes involving units/validation (int→Duration, string→enum, etc), proactively address:
+  1. Validation requirements for new type
+  2. Edge case handling (zero, negative, max values, rounding/precision)
+  3. Backwards compatibility or migration concerns
+- Present validation options before implementation rather than waiting for follow-up questions
+- Include test cases for edge cases when introducing validation
+
+### Response Style
+
+- Provide file:line references when answering questions about existing code
+- Execute incremental validation (build, test) after each logical change group
+- Skip announcing routine tasks (test updates, doc updates) - just do them

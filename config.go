@@ -102,10 +102,14 @@ func WithCTSTimeout(timeout time.Duration) Option {
 }
 
 // WithReadTimeout sets the read timeout (VTIME)
-// Maximum is 25.5 seconds (255 deciseconds). Values are rounded to deciseconds.
+// Maximum is 25.5 seconds (255 deciseconds).
+// Must be a multiple of 100ms (1 decisecond).
 func WithReadTimeout(timeout time.Duration) Option {
 	return func(c *Config) error {
 		if timeout < 0 || timeout > 255*100*time.Millisecond {
+			return ErrInvalidConfig
+		}
+		if timeout%(100*time.Millisecond) != 0 {
 			return ErrInvalidConfig
 		}
 		c.ReadTimeout = timeout
