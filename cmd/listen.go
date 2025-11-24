@@ -47,6 +47,9 @@ Example usage:
 		baudRate, _ := cmd.Flags().GetInt("baud")
 		flowControl, _ := cmd.Flags().GetString("flow-control")
 		initialRTS, _ := cmd.Flags().GetBool("initial-rts")
+		noTimestamps, _ := cmd.Flags().GetBool("no-timestamps")
+		showIndicators, _ := cmd.Flags().GetBool("show-indicators")
+		rawMode, _ := cmd.Flags().GetBool("raw")
 
 		// Configure port options
 		opts := []serial.Option{
@@ -67,7 +70,7 @@ Example usage:
 		}
 
 		// Start the TUI
-		if err := runListenTUI(portPath, opts...); err != nil {
+		if err := runListenTUI(portPath, noTimestamps, showIndicators, rawMode, opts...); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -81,6 +84,11 @@ func init() {
 	listenCmd.Flags().IntP("baud", "b", 115200, "Baud rate (default: 115200)")
 	listenCmd.Flags().StringP("flow-control", "f", "none", "Flow control: none, cts, rtscts (default: none)")
 	listenCmd.Flags().Bool("initial-rts", false, "Assert RTS on port open (required for CTS flow control)")
+
+	// Add flags for display formatting
+	listenCmd.Flags().Bool("no-timestamps", false, "Hide timestamps from output")
+	listenCmd.Flags().Bool("show-indicators", false, "Show RX/TX indicators (off by default)")
+	listenCmd.Flags().Bool("raw", false, "Raw output mode: no timestamps, no indicators")
 }
 
 // listenModel represents the Bubble Tea model for the listen command
@@ -92,7 +100,7 @@ type listenModel struct {
 	keys      keys.TerminalKeys
 }
 
-func runListenTUI(portPath string, opts ...serial.Option) error {
+func runListenTUI(portPath string, noTimestamps, showIndicators, rawMode bool, opts ...serial.Option) error {
 
 	// Create configuration from options to show in status bar
 	config := serial.DefaultConfig()
@@ -111,9 +119,21 @@ func runListenTUI(portPath string, opts ...serial.Option) error {
 
 	// Create initial model
 	serialModel := models.NewSerialModel(portPath)
+	terminal := components.NewTerminal(80, 20)
+
+	// Configure formatting options
+	// Default: no indicators, show timestamps
+	if rawMode {
+		terminal.SetFormatOptions(true, true) // No timestamps, no indicators
+	} else if noTimestamps {
+		terminal.SetFormatOptions(true, !showIndicators) // No timestamps, indicators based on flag
+	} else {
+		terminal.SetFormatOptions(false, !showIndicators) // Show timestamps, indicators based on flag
+	}
+
 	m := listenModel{
 		SerialModel: serialModel,
-		terminal:    components.NewTerminal(80, 20),
+		terminal:    terminal,
 		statusBar:   components.NewStatusBar("Serial Listen", portPath),
 		help:        help.New(),
 		keys:        keys.NewTerminalKeys(),
@@ -260,6 +280,14 @@ func (m *listenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.ToggleASCII):
 			m.terminal.ToggleASCII()
 			m.terminal.RefreshDisplayWithRawData(m.GetRawData())
+
+		case key.Matches(msg, m.keys.ToggleTimestamps):
+			m.terminal.ToggleTimestamps()
+			m.terminal.RefreshDisplayWithRawData(m.GetRawData())
+
+		case key.Matches(msg, m.keys.ToggleIndicators):
+			m.terminal.ToggleIndicators()
+			m.terminal.RefreshDisplayWithRawData(m.GetRawData())
 		}
 	}
 
@@ -303,6 +331,27 @@ func (m *listenModel) View() string {
 
 	// Layout without header, with comprehensive status bar at bottom
 	contentWithBorder := styles.ContentBorderStyle.Render(content)
+
+	// Show help if requested
+	var helpView string
+	if m.help.ShowAll {
+		helpView = m.help.View(m.keys)
+		helpStyle := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("240")).
+			Padding(1, 2).
+			Margin(1, 0)
+		helpView = helpStyle.Render(helpView)
+	}
+
+	if m.help.ShowAll {
+		return lipgloss.JoinVertical(
+			lipgloss.Left,
+			contentWithBorder,
+			helpView,
+			statusBar,
+		)
+	}
 
 	return lipgloss.JoinVertical(
 		lipgloss.Left,

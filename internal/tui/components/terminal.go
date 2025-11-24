@@ -32,8 +32,13 @@ func (t *Terminal) GetViewport() viewport.Model {
 }
 
 func (t *Terminal) AddMessage(msg DataReceivedMsg) {
-	formattedMsg := t.formatter.FormatMessage(msg)
-	t.data = append(t.data, formattedMsg)
+	formattedLines := t.formatter.FormatMessage(msg)
+	if len(formattedLines) == 0 {
+		// No complete lines yet, still buffering
+		return
+	}
+
+	t.data = append(t.data, formattedLines...)
 
 	// Set content and ensure viewport scrolls to show the latest message
 	content := strings.Join(t.data, "\n")
@@ -69,18 +74,39 @@ func (t *Terminal) RefreshDisplayWithRawData(rawData []DataReceivedMsg) {
 func (t *Terminal) Clear() {
 	t.data = make([]string, 0)
 	t.viewport.SetContent("")
+	t.formatter.ClearBuffer()
 }
 
 func (t *Terminal) ToggleHex() {
 	t.formatter.ToggleHex()
+	// When toggling display modes, clear the line buffer to avoid confusion
+	t.formatter.ClearBuffer()
 }
 
 func (t *Terminal) ToggleASCII() {
 	t.formatter.ToggleASCII()
+	// When toggling display modes, clear the line buffer to avoid confusion
+	t.formatter.ClearBuffer()
 }
 
 func (t *Terminal) GetDisplayMode() DisplayMode {
 	return t.formatter.GetDisplayMode()
+}
+
+func (t *Terminal) SetFormatOptions(noTimestamps, noIndicators bool) {
+	t.formatter.SetFormatOptions(noTimestamps, noIndicators)
+}
+
+func (t *Terminal) ToggleTimestamps() {
+	t.formatter.options.NoTimestamps = !t.formatter.options.NoTimestamps
+}
+
+func (t *Terminal) ToggleIndicators() {
+	t.formatter.options.NoIndicators = !t.formatter.options.NoIndicators
+}
+
+func (t *Terminal) GetFormatOptions() FormatOptions {
+	return t.formatter.options
 }
 
 func (t *Terminal) Update(msg tea.Msg) (viewport.Model, tea.Cmd) {

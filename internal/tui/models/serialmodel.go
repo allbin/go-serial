@@ -147,7 +147,7 @@ func (m *SerialModel) GetFormattedData() []string {
 	return m.formatter.FormatMessages(m.rawData)
 }
 
-func (m *SerialModel) FormatMessage(msg components.DataReceivedMsg) string {
+func (m *SerialModel) FormatMessage(msg components.DataReceivedMsg) []string {
 	return m.formatter.FormatMessage(msg)
 }
 

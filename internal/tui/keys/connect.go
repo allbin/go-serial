@@ -59,7 +59,8 @@ func (k ConnectKeys) ShortHelp() []key.Binding {
 
 func (k ConnectKeys) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.InsertMode, k.VisualMode, k.Escape, k.Clear, k.ToggleHex, k.ToggleASCII},
+		{k.InsertMode, k.VisualMode, k.Escape, k.Clear},
+		{k.ToggleHex, k.ToggleASCII, k.ToggleTimestamps, k.ToggleIndicators},
 		{k.GotoTop, k.GotoBottom, k.Up, k.Down},
 		{k.Enter, k.Help, k.Quit},
 	}

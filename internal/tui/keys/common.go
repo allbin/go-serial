@@ -34,9 +34,11 @@ func NewCommonKeys() CommonKeys {
 // Terminal-specific key bindings for commands that display data
 type TerminalKeys struct {
 	CommonKeys
-	Clear       key.Binding
-	ToggleHex   key.Binding
-	ToggleASCII key.Binding
+	Clear            key.Binding
+	ToggleHex        key.Binding
+	ToggleASCII      key.Binding
+	ToggleTimestamps key.Binding
+	ToggleIndicators key.Binding
 }
 
 func NewTerminalKeys() TerminalKeys {
@@ -54,6 +56,14 @@ func NewTerminalKeys() TerminalKeys {
 			key.WithKeys("a"),
 			key.WithHelp("a", "toggle ascii"),
 		),
+		ToggleTimestamps: key.NewBinding(
+			key.WithKeys("t"),
+			key.WithHelp("t", "toggle timestamps"),
+		),
+		ToggleIndicators: key.NewBinding(
+			key.WithKeys("r"),
+			key.WithHelp("r", "toggle RX/TX indicators"),
+		),
 	}
 }
 
@@ -63,7 +73,8 @@ func (k TerminalKeys) ShortHelp() []key.Binding {
 
 func (k TerminalKeys) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.InsertMode, k.Escape, k.Clear, k.ToggleHex, k.ToggleASCII},
+		{k.InsertMode, k.Escape, k.Clear},
+		{k.ToggleHex, k.ToggleASCII, k.ToggleTimestamps, k.ToggleIndicators},
 		{k.Help, k.Quit},
 	}
 }
