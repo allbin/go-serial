@@ -237,8 +237,8 @@ serial.WithStopBits(1)              // 1, 2
 serial.WithParity(serial.ParityEven) // None, Odd, Even, Mark, Space
 serial.WithFlowControl(serial.FlowControlCTS) // None, CTS, RTSCTS (requires WithInitialRTS)
 serial.WithCTSTimeout(10*time.Second)
-serial.WithReadTimeout(25)          // VTIME in tenths of seconds (0-255)
-serial.WithWriteMode(serial.WriteModeSynced) // Buffered, Synced
+serial.WithReadTimeout(2500*time.Millisecond) // VTIME setting (max 25.5s)
+serial.WithWriteMode(serial.WriteModeSynced)  // Buffered, Synced
 serial.WithSyncWrite()              // Shorthand for synced writes
 serial.WithInitialRTS(true)         // Set initial RTS state (required for flow control)
 serial.WithInitialDTR(true)         // Set initial DTR state
@@ -252,7 +252,7 @@ serial.WithInitialDTR(true)         // Set initial DTR state
 - **Parity**: None
 - **FlowControl**: None
 - **CTSTimeout**: 60s
-- **ReadTimeout**: 2.5 seconds (25 tenths)
+- **ReadTimeout**: 2.5 seconds
 - **WriteMode**: Buffered
 
 ### Error Handling

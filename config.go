@@ -12,16 +12,16 @@ const (
 
 // Config holds the configuration for a serial port
 type Config struct {
-	BaudRate          int
-	DataBits          int
-	StopBits          int
-	Parity            Parity
-	FlowControl       FlowControl
-	CTSTimeout        time.Duration
-	ReadTimeoutTenths int       // VTIME setting in tenths of seconds (0-255)
-	WriteMode         WriteMode // Controls write synchronization behavior
-	InitialRTS        *bool     // Initial RTS state (nil = hardware default)
-	InitialDTR        *bool     // Initial DTR state (nil = hardware default)
+	BaudRate    int
+	DataBits    int
+	StopBits    int
+	Parity      Parity
+	FlowControl FlowControl
+	CTSTimeout  time.Duration
+	ReadTimeout time.Duration // VTIME setting (max 25.5 seconds, rounded to deciseconds)
+	WriteMode   WriteMode     // Controls write synchronization behavior
+	InitialRTS  *bool         // Initial RTS state (nil = hardware default)
+	InitialDTR  *bool         // Initial DTR state (nil = hardware default)
 }
 
 // Option is a functional option for configuring a serial port
@@ -30,14 +30,14 @@ type Option func(*Config) error
 // DefaultConfig returns a configuration with sensible defaults
 func DefaultConfig() Config {
 	return Config{
-		BaudRate:          115200,
-		DataBits:          8,
-		StopBits:          1,
-		Parity:            ParityNone,
-		FlowControl:       FlowControlNone,
-		CTSTimeout:        60 * time.Second, // Neocortec reference default (matches NcConstants.DefaultCtsTimeOutMs)
-		ReadTimeoutTenths: 25,               // 2.5 seconds - match reference 250ms * 10
-		WriteMode:         WriteModeBuffered,
+		BaudRate:    115200,
+		DataBits:    8,
+		StopBits:    1,
+		Parity:      ParityNone,
+		FlowControl: FlowControlNone,
+		CTSTimeout:  60 * time.Second,        // Neocortec reference default (matches NcConstants.DefaultCtsTimeOutMs)
+		ReadTimeout: 2500 * time.Millisecond, // 2.5 seconds - match reference 250ms * 10
+		WriteMode:   WriteModeBuffered,
 	}
 }
 
@@ -101,13 +101,14 @@ func WithCTSTimeout(timeout time.Duration) Option {
 	}
 }
 
-// WithReadTimeout sets the read timeout in tenths of seconds (VTIME)
-func WithReadTimeout(tenths int) Option {
+// WithReadTimeout sets the read timeout (VTIME)
+// Maximum is 25.5 seconds (255 deciseconds). Values are rounded to deciseconds.
+func WithReadTimeout(timeout time.Duration) Option {
 	return func(c *Config) error {
-		if tenths < 0 || tenths > 255 {
+		if timeout < 0 || timeout > 255*100*time.Millisecond {
 			return ErrInvalidConfig
 		}
-		c.ReadTimeoutTenths = tenths
+		c.ReadTimeout = timeout
 		return nil
 	}
 }

@@ -464,7 +464,7 @@ func configurePort(fd int, config Config) error {
 
 	// Timeout: VMIN=0, VTIME from config (deciseconds)
 	termios.Cc[unix.VMIN] = 0
-	termios.Cc[unix.VTIME] = uint8(config.ReadTimeoutTenths)
+	termios.Cc[unix.VTIME] = uint8(config.ReadTimeout / (100 * time.Millisecond))
 
 	// Get and set baud rate
 	baudRate, err := getBaudRate(config.BaudRate)
