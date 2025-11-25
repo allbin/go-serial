@@ -980,8 +980,8 @@ func (p *port) FlushInput() error {
 }
 
 // DrainInput reads and discards all pending input data until the buffer is empty.
-// Unlike FlushInput which only clears the kernel buffer, this actively reads
-// until no more data arrives, ensuring data in transit or hardware FIFOs is also cleared.
+// It first flushes the kernel buffer, then actively reads until no more data arrives,
+// ensuring data in transit or hardware FIFOs is also cleared.
 func (p *port) DrainInput() error {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -990,6 +990,12 @@ func (p *port) DrainInput() error {
 		return ErrPortClosed
 	}
 
+	// Flush kernel buffer first
+	if err := unix.IoctlSetInt(p.fd, unix.TCFLSH, unix.TCIFLUSH); err != nil {
+		return err
+	}
+
+	// Read until no more data arrives
 	buf := make([]byte, 256)
 	for {
 		n, err := unix.Read(p.fd, buf)
