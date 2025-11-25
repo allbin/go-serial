@@ -17,7 +17,8 @@ type Port interface {
 	WriteContext(ctx context.Context, data []byte) (int, error)
 	ReadContext(ctx context.Context, buf []byte) (int, error)
 	GetCTSStatus() (bool, error)
-	Drain() error
+	DrainOutput() error
+	DrainInput() error
 	FlushInput() error
 	FlushOutput() error
 
@@ -954,8 +955,8 @@ func (p *port) WaitForSignalChangeContext(ctx context.Context, mask SignalMask) 
 	}
 }
 
-// Drain waits until all output written to the port has been transmitted
-func (p *port) Drain() error {
+// DrainOutput waits until all output written to the port has been transmitted
+func (p *port) DrainOutput() error {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -966,7 +967,7 @@ func (p *port) Drain() error {
 	return unix.IoctlSetInt(p.fd, unix.TCSBRK, 1)
 }
 
-// FlushInput discards any unread input data
+// FlushInput discards any unread input data in the kernel buffer
 func (p *port) FlushInput() error {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -976,6 +977,29 @@ func (p *port) FlushInput() error {
 	}
 
 	return unix.IoctlSetInt(p.fd, unix.TCFLSH, unix.TCIFLUSH)
+}
+
+// DrainInput reads and discards all pending input data until the buffer is empty.
+// Unlike FlushInput which only clears the kernel buffer, this actively reads
+// until no more data arrives, ensuring data in transit or hardware FIFOs is also cleared.
+func (p *port) DrainInput() error {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	if p.closed {
+		return ErrPortClosed
+	}
+
+	buf := make([]byte, 256)
+	for {
+		n, err := unix.Read(p.fd, buf)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return nil
+		}
+	}
 }
 
 // FlushOutput discards any unwritten output data
