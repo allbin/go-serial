@@ -317,15 +317,29 @@ port, err := serial.Open("/dev/ttyUSB0",
 
 **Why Large Timeout is Needed:**
 - CTS activates only during scheduled data events (potentially seconds apart)
-- Missing the 488us window requires waiting for next event
 - Default 60s timeout matches Neocortec reference implementation
 - For faster response, configure module's CTS Interleave (AAPI ID 50) to trigger on every Wake Up event
 
 **Implementation Details:**
-- Write operations are **pre-queued** before CTS goes LOW
-- When CTS activates (goes LOW), data is written **immediately** with no scheduling delay
-- This ensures transmission begins within the 488us CTS window
-- Pattern matches Neocortec's reference implementation for maximum reliability
+- `FlowControlCTS` enables **hardware flow control (CRTSCTS)**: the USB-serial adapter chip
+  gates TX on CTS in hardware, so transmission starts within the first microseconds of the
+  CTS window. Userspace cannot do this: on FTDI adapters, even reading the CTS level
+  (TIOCMGET) is a ~250-600us USB round trip - longer than the whole window
+- The write path only **paces frames**: it waits until CTS is inactive, hands the frame to
+  the chip (which holds it until the next window opens), then waits for actual transmission
+  before completing. This guarantees one contiguous frame per CTS window and prevents a
+  frame from being split across two windows
+- `Write()` returns when the frame has been **physically transmitted** inside a CTS window,
+  not when buffered. Expect it to block for up to one scheduled-data period
+- On timeout or context cancellation, any armed-but-untransmitted frame is flushed from the
+  output buffer so it cannot leak into a later window
+- Pattern matches Neocortec's reference implementation (NeoTools), which enables hardware
+  handshake on every platform and queues frames on the CTS deassert edge
+
+**Verified against hardware (NC2400 module on FT2232, 2026-06):** the module only accepts
+frames that arrive inside the CTS window (0/4 accepted outside it). Userspace-only gating
+managed 2/6 commands with erratic waits (0.25-10s); hardware-gated pacing delivered 8/8
+single writes and 5/5 back-to-back writes, each in its own consecutive window.
 
 **Troubleshooting:**
 - First message works, subsequent fail: Likely missing CTS windows between scheduled events

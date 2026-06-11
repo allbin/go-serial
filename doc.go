@@ -27,10 +27,18 @@
 //	port, err := serial.Open("/dev/ttyUSB0",
 //	    serial.WithBaudRate(115200),
 //	    serial.WithFlowControl(serial.FlowControlCTS),
-//	    serial.WithCTSTimeout(200*time.Millisecond),
+//	    serial.WithCTSTimeout(60*time.Second), // cover several CTS events
 //	    serial.WithInitialRTS(true),
 //	    serial.WithInitialDTR(true),
 //	)
+//
+// FlowControlCTS is for devices that pulse CTS in short scheduled windows
+// (e.g. NeoCortec NeoMesh): it enables hardware flow control (CRTSCTS) so the
+// adapter chip gates transmission, and paces one frame per CTS window. Write
+// returns when the frame has been physically transmitted, which can take up
+// to one scheduled-event period. Devices that hold CTS asserted continuously
+// should use FlowControlRTSCTS instead; with FlowControlCTS they incur the
+// full CTSTimeout wait before each write is transmitted.
 //
 // # Port Discovery
 //

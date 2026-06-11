@@ -87,6 +87,8 @@ const (
 // writeRequest represents a queued write operation waiting for CTS
 type writeRequest struct {
 	data     []byte
+	timeout  time.Duration
+	cancelCh <-chan struct{} // closed by the requester on timeout or context cancellation
 	resultCh chan writeResult
 }
 
@@ -96,12 +98,30 @@ type writeResult struct {
 	err error
 }
 
-// ctsMonitor handles CTS signal monitoring using TIOCMIWAIT
-// It pre-queues write operations and executes them immediately when CTS goes LOW
+// ctsMonitor paces writes for event-based CTS devices (e.g. NeoCortec NeoMesh).
+//
+// Such devices assert CTS for a sub-millisecond window once per scheduled
+// event and only accept data that arrives inside that window. USB-serial
+// adapters deliver CTS edges to userspace too late to write into the current
+// window, so the actual byte-level gating is delegated to the adapter chip
+// via termios CRTSCTS (see configurePort). The monitor's job is pacing:
+//
+//  1. Wait until CTS is inactive, so the frame is never handed to the chip
+//     while a window is already open (a late start can split the frame
+//     across two windows and the device drops it).
+//  2. Write the frame. CRTSCTS holds it in the chip FIFO and transmits it
+//     contiguously the moment the next window opens.
+//  3. Drain, so completion means "frame physically transmitted" and at most
+//     one frame is in flight per CTS window.
+//
+// This mirrors the vendor reference implementation (NeoTools), which enables
+// hardware handshake on every platform and queues frames on the CTS
+// deassert edge.
 type ctsMonitor struct {
 	fd      int
 	stopCh  chan struct{}
 	writeCh chan *writeRequest // Queue for pending writes
+	edgeCh  chan struct{}      // CTS edge notifications from the watcher goroutine
 }
 
 // getBaudRate converts an integer baud rate to the unix constant
@@ -172,14 +192,16 @@ func getBaudRate(rate int) (uint32, error) {
 	}
 }
 
-// getModemStatus retrieves modem control signals using unix package
+// getModemStatus retrieves modem control signals using unix package.
+// Retries on EINTR: blocking tty ioctls are routinely interrupted by the Go
+// runtime's preemption signals.
 func getModemStatus(fd int) (int, error) {
-	return unix.IoctlGetInt(fd, unix.TIOCMGET)
-}
-
-// assertRTS manually asserts the RTS signal using unix package
-func assertRTS(fd int) error {
-	return unix.IoctlSetInt(fd, unix.TIOCMBIS, unix.TIOCM_RTS)
+	for {
+		status, err := unix.IoctlGetInt(fd, unix.TIOCMGET)
+		if err != unix.EINTR {
+			return status, err
+		}
+	}
 }
 
 // setDTR sets DTR signal state
@@ -220,9 +242,15 @@ func setRTSSignal(fd int, state bool) error {
 	return unix.IoctlSetPointerInt(fd, unix.TIOCMSET, status)
 }
 
-// waitForCTSChange waits for CTS signal changes using TIOCMIWAIT
+// waitForCTSChange waits for CTS signal changes using TIOCMIWAIT,
+// retrying when the wait is interrupted by a signal
 func waitForCTSChange(fd int) error {
-	return unix.IoctlSetInt(fd, unix.TIOCMIWAIT, unix.TIOCM_CTS)
+	for {
+		err := unix.IoctlSetInt(fd, unix.TIOCMIWAIT, unix.TIOCM_CTS)
+		if err != unix.EINTR {
+			return err
+		}
+	}
 }
 
 // signalMaskToTIOCM converts SignalMask to unix TIOCM bits
@@ -267,74 +295,130 @@ func newCTSMonitor(fd int) *ctsMonitor {
 		fd:      fd,
 		stopCh:  make(chan struct{}),
 		writeCh: make(chan *writeRequest, 1), // Buffered for one pending write
+		edgeCh:  make(chan struct{}, 1),
 	}
 }
 
-// start begins CTS monitoring in a background goroutine
-// This goroutine pre-queues write operations and executes them immediately when CTS goes LOW
+// start begins CTS monitoring in background goroutines
 func (c *ctsMonitor) start() {
+	// Single long-lived edge watcher. TIOCMIWAIT has no timeout, so at most
+	// this one goroutine can remain parked in the ioctl after the port
+	// closes, instead of one per attempted write.
 	go func() {
-		var pendingWrite *writeRequest
-
 		for {
-			// If no pending write, wait for either a write request or stop signal
-			if pendingWrite == nil {
-				select {
-				case <-c.stopCh:
-					return
-				case req := <-c.writeCh:
-					pendingWrite = req
-				}
+			if err := waitForCTSChange(c.fd); err != nil {
+				return
 			}
-
-			// We have a pending write, check if CTS is already active
-			status, err := getModemStatus(c.fd)
-			if err != nil {
-				// Send error back and clear pending write
-				if pendingWrite != nil {
-					pendingWrite.resultCh <- writeResult{0, err}
-					pendingWrite = nil
-				}
-				continue
-			}
-
-			// Check if CTS is active (TIOCM_CTS bit set = ready to send)
-			if status&unix.TIOCM_CTS != 0 {
-				// CTS is active, write immediately
-				n, err := unix.Write(c.fd, pendingWrite.data)
-				pendingWrite.resultCh <- writeResult{n, err}
-				pendingWrite = nil
-				continue
-			}
-
-			// CTS is not active, wait for it to change
-			// Use non-blocking wait with timeout to allow checking stop signal
-			done := make(chan error, 1)
-			go func() {
-				done <- waitForCTSChange(c.fd)
-			}()
-
 			select {
 			case <-c.stopCh:
-				// Port closing, send error to pending write
-				if pendingWrite != nil {
-					pendingWrite.resultCh <- writeResult{0, ErrPortClosed}
-					pendingWrite = nil
-				}
 				return
-			case err := <-done:
-				if err != nil {
-					// Error waiting for CTS change
-					if pendingWrite != nil {
-						pendingWrite.resultCh <- writeResult{0, err}
-						pendingWrite = nil
-					}
-					return
-				}
-				// CTS changed, loop back to check if it's active now
+			case c.edgeCh <- struct{}{}:
+			default: // an edge is already pending, coalesce
 			}
 		}
 	}()
+
+	go func() {
+		for {
+			select {
+			case <-c.stopCh:
+				return
+			case req := <-c.writeCh:
+				req.resultCh <- c.execute(req)
+			}
+		}
+	}()
+}
+
+// execute performs one paced write: wait for CTS inactive, arm the frame,
+// wait for it to be transmitted.
+func (c *ctsMonitor) execute(req *writeRequest) writeResult {
+	// Requester may have given up while the request sat in the queue
+	select {
+	case <-req.cancelCh:
+		return writeResult{0, ErrCTSTimeout}
+	default:
+	}
+
+	timer := time.NewTimer(req.timeout)
+	defer timer.Stop()
+
+	// Discard any stale edge from a previous CTS pulse
+	select {
+	case <-c.edgeCh:
+	default:
+	}
+
+	// Phase 1: wait until CTS is inactive so the frame arms for the NEXT
+	// window rather than starting mid-window. On a NeoCortec module this
+	// waits at most one CTS pulse width (~488us). If CTS is held active
+	// continuously (bootloader mode, classic flow-control devices), the
+	// timer fires and we write anyway - the chip transmits immediately in
+	// that case, which is the correct behavior for a continuously-ready
+	// device. This matches the vendor reference (write on CTS deassert
+	// edge; on timeout write only if CTS is still asserted).
+waitInactive:
+	for {
+		status, err := getModemStatus(c.fd)
+		if err != nil {
+			return writeResult{0, err}
+		}
+		if status&unix.TIOCM_CTS == 0 {
+			break
+		}
+		select {
+		case <-c.edgeCh:
+			// CTS changed, re-check level
+		case <-timer.C:
+			break waitInactive
+		case <-req.cancelCh:
+			return writeResult{0, ErrCTSTimeout}
+		case <-c.stopCh:
+			return writeResult{0, ErrPortClosed}
+		}
+	}
+
+	// Phase 2: arm the frame. With CRTSCTS enabled the adapter chip holds
+	// it and transmits contiguously from the first microseconds of the next
+	// CTS window - timing precision no host-side code can achieve.
+	n, err := unix.Write(c.fd, req.data)
+	if err != nil {
+		return writeResult{0, err}
+	}
+
+	// Phase 3: wait until the frame has physically left the chip (the next
+	// CTS window). This paces callers to one frame per window and makes a
+	// returned write mean "transmitted", not "buffered". Bounded by its own
+	// timeout so a dead module cannot leave a stale frame armed in the chip
+	// FIFO: on timeout/cancel the output buffer is flushed.
+	drainTimer := time.NewTimer(req.timeout)
+	defer drainTimer.Stop()
+	drained := make(chan error, 1)
+	go func() {
+		for {
+			err := unix.IoctlSetInt(c.fd, unix.TCSBRK, 1)
+			if err != unix.EINTR {
+				drained <- err
+				return
+			}
+		}
+	}()
+
+	select {
+	case err := <-drained:
+		if err != nil {
+			return writeResult{n, err}
+		}
+		return writeResult{n, nil}
+	case <-drainTimer.C:
+		unix.IoctlSetInt(c.fd, unix.TCFLSH, unix.TCOFLUSH)
+		return writeResult{0, ErrCTSTimeout}
+	case <-req.cancelCh:
+		unix.IoctlSetInt(c.fd, unix.TCFLSH, unix.TCOFLUSH)
+		return writeResult{0, ErrCTSTimeout}
+	case <-c.stopCh:
+		return writeResult{0, ErrPortClosed}
+	}
 }
 
 // stop stops CTS monitoring
@@ -342,11 +426,15 @@ func (c *ctsMonitor) stop() {
 	close(c.stopCh)
 }
 
-// queueWrite queues a write operation and waits for it to complete
-// The write will be executed immediately when CTS goes LOW
-func (c *ctsMonitor) queueWrite(data []byte, timeout time.Duration) (int, error) {
+// queueWrite queues a write operation and waits for it to complete.
+// Completion means the frame has been transmitted on the wire (inside a CTS
+// window), not merely buffered. cancel may be nil; if it fires, any armed
+// but untransmitted data is flushed so it cannot leak into a later window.
+func (c *ctsMonitor) queueWrite(data []byte, timeout time.Duration, cancel <-chan struct{}) (int, error) {
 	req := &writeRequest{
 		data:     data,
+		timeout:  timeout,
+		cancelCh: cancel,
 		resultCh: make(chan writeResult, 1),
 	}
 
@@ -359,16 +447,17 @@ func (c *ctsMonitor) queueWrite(data []byte, timeout time.Duration) (int, error)
 		// Request queued successfully, wait for result
 	case <-timer.C:
 		return 0, ErrCTSTimeout
+	case <-cancel:
+		return 0, ErrCTSTimeout
 	case <-c.stopCh:
 		return 0, ErrPortClosed
 	}
 
-	// Wait for the write to complete
+	// Wait for the result. The monitor owns the request from here: it
+	// observes the same cancel channel and cleans up armed data itself.
 	select {
 	case result := <-req.resultCh:
 		return result.n, result.err
-	case <-timer.C:
-		return 0, ErrCTSTimeout
 	case <-c.stopCh:
 		return 0, ErrPortClosed
 	}
@@ -507,8 +596,12 @@ func configurePort(fd int, config Config) error {
 		termios.Cflag |= unix.PARENB
 	}
 
-	// Flow control
-	if config.FlowControl == FlowControlRTSCTS {
+	// Flow control. FlowControlCTS also enables CRTSCTS: the adapter chip
+	// gates TX on CTS in hardware, which is the only way to hit
+	// sub-millisecond CTS windows (USB modem-status reporting is far too
+	// slow for userspace gating). The ctsMonitor then only paces frames,
+	// it does not gate bytes.
+	if config.FlowControl == FlowControlRTSCTS || config.FlowControl == FlowControlCTS {
 		termios.Cflag |= unix.CRTSCTS
 	}
 
@@ -554,17 +647,23 @@ func (p *port) Read(buf []byte) (int, error) {
 // Write writes data to the serial port
 func (p *port) Write(data []byte) (int, error) {
 	p.mu.RLock()
-	defer p.mu.RUnlock()
 
 	if p.closed {
+		p.mu.RUnlock()
 		return 0, ErrPortClosed
 	}
 
-	// Handle CTS flow control if enabled
-	// Data is pre-queued and written immediately when CTS goes LOW
+	// Handle CTS flow control if enabled. The write returns once the frame
+	// has been transmitted inside a CTS window (see ctsMonitor). The port
+	// lock is released first: a paced write can block for seconds and must
+	// not hold up Close(), which interrupts the write via the monitor's
+	// stop channel instead.
 	if p.config.FlowControl == FlowControlCTS && p.ctsMonitor != nil {
-		return p.ctsMonitor.queueWrite(data, p.config.CTSTimeout)
+		monitor, timeout := p.ctsMonitor, p.config.CTSTimeout
+		p.mu.RUnlock()
+		return monitor.queueWrite(data, timeout, nil)
 	}
+	defer p.mu.RUnlock()
 
 	// No flow control, perform direct write
 	return unix.Write(p.fd, data)
@@ -573,20 +672,25 @@ func (p *port) Write(data []byte) (int, error) {
 // WriteContext writes data with context timeout support
 func (p *port) WriteContext(ctx context.Context, data []byte) (int, error) {
 	p.mu.RLock()
-	defer p.mu.RUnlock()
 
 	if p.closed {
+		p.mu.RUnlock()
 		return 0, ErrPortClosed
 	}
 
 	// Check if context is already cancelled
 	select {
 	case <-ctx.Done():
+		p.mu.RUnlock()
 		return 0, ctx.Err()
 	default:
 	}
 
-	// Handle CTS flow control with context timeout
+	// Handle CTS flow control with context timeout. The context's done
+	// channel is passed to the monitor so cancellation also flushes any
+	// armed-but-untransmitted frame instead of letting it transmit in a
+	// later CTS window. As in Write, the port lock is not held while the
+	// paced write blocks.
 	if p.config.FlowControl == FlowControlCTS && p.ctsMonitor != nil {
 		// Use shorter of context timeout or CTS timeout
 		timeout := p.config.CTSTimeout
@@ -597,25 +701,17 @@ func (p *port) WriteContext(ctx context.Context, data []byte) (int, error) {
 			}
 		}
 
-		// Create channel for queueWrite result
-		resultCh := make(chan writeResult, 1)
-
-		// Queue write in goroutine to allow context cancellation
-		go func() {
-			n, err := p.ctsMonitor.queueWrite(data, timeout)
-			resultCh <- writeResult{n: n, err: err}
-		}()
-
-		// Wait for write completion or context cancellation
-		select {
-		case result := <-resultCh:
-			return result.n, result.err
-		case <-ctx.Done():
+		monitor := p.ctsMonitor
+		p.mu.RUnlock()
+		n, err := monitor.queueWrite(data, timeout, ctx.Done())
+		if err != nil && ctx.Err() != nil {
 			return 0, ctx.Err()
 		}
+		return n, err
 	}
 
 	// No flow control, perform direct write with context
+	defer p.mu.RUnlock()
 	type directWriteResult struct {
 		n   int
 		err error
